@@ -1,0 +1,14 @@
+# Optional overlay for running the backend WebChannel behind a host Nginx.
+#
+# Usage:
+#   docker compose -f compose.yaml -f compose.web.yaml up -d
+#
+# The backend is published only on loopback so Nginx on the host can proxy to it.
+services:
+  ApexTran:
+    environment:
+      ApexTran_WEB_HOST: 0.0.0.0
+      ApexTran_WEB_PORT: 8000
+      ApexTran_START_MODE: web
+    ports:
+      - "127.0.0.1:${ApexTran_WEB_PORT:-8000}:8000"

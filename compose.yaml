@@ -1,0 +1,26 @@
+# ApexTran container stack. Run from the repo root:
+#
+#   docker compose up -d     # or: make up
+#   docker compose logs -f   # or: make logs
+#   docker compose down      # or: make down
+#
+# The Dockerfile lives in docker/, but the build context is the repo root so it
+# can copy backend/, pyproject.toml, uv.lock, etc. Keep the context lean via
+# .dockerignore.
+services:
+  ApexTran:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: ApexTran:latest
+    container_name: ApexTran
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ${ApexTran_WORKSPACE_PATH:-.}:/workspace
+      - ${ApexTran_HOME:-${HOME}/.ApexTran}:/data
+      - ${ApexTran_AGENT_HOME:-${HOME}/.agents}:/root/.agents
+    stdin_open: true
+    tty: true
+    restart: unless-stopped

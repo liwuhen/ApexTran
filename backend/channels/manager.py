@@ -1,0 +1,151 @@
+import asyncio
+import contextlib
+import functools
+from collections.abc import AsyncIterable, Collection
+
+from loguru import logger
+
+from backend.agent.settings import ChannelSettings
+from backend.app.framework import ApexTranFramework
+from backend.channels.base import Channel
+from backend.channels.handler import BufferedMessageHandler
+from backend.channels.message import ChannelMessage
+from backend.core.events import StreamEvent
+from backend.utils.envelope import content_of, field_of
+from backend.utils.types import Envelope, MessageHandler
+from backend.utils.utils import wait_until_stopped
+
+
+class ChannelManager:
+    def __init__(
+        self,
+        framework: ApexTranFramework,
+        enabled_channels: Collection[str] | None = None,
+        stream_output: bool | None = None,
+    ) -> None:
+        self.framework = framework
+        self._channels: dict[str, Channel] = self.framework.get_channels(self.on_receive)
+        self._settings = ChannelSettings()
+        self._stream_output = stream_output if stream_output is not None else self._settings.stream_output
+        if enabled_channels is not None:
+            self._enabled_channels = list(enabled_channels)
+        else:
+            self._enabled_channels = self._settings.enabled_channels.split(",")
+        self._messages = asyncio.Queue[ChannelMessage]()
+        self._ongoing_tasks: dict[str, set[asyncio.Task]] = {}
+        self._session_handlers: dict[str, MessageHandler] = {}
+
+    async def on_receive(self, message: ChannelMessage) -> None:
+        """收到消息后，根据消息的 channel 和 session_id 找到对应的处理器，并调用处理器处理消息。"""
+        channel = message.channel
+        session_id = message.session_id
+        if channel not in self._channels:
+            logger.warning(f"Received message from unknown channel '{channel}', ignoring.")
+            return
+        if session_id not in self._session_handlers:
+            handler: MessageHandler
+            if self._channels[channel].needs_debounce:
+                handler = BufferedMessageHandler(
+                    self._messages.put,
+                    active_time_window=self._settings.active_time_window,
+                    max_wait_seconds=self._settings.max_wait_seconds,
+                    debounce_seconds=self._settings.debounce_seconds,
+                )
+            else:
+                handler = self._messages.put
+            self._session_handlers[session_id] = handler
+        await self._session_handlers[session_id](message)
+
+    def get_channel(self, name: str) -> Channel | None:
+        return self._channels.get(name)
+
+    async def dispatch_output(self, message: Envelope) -> bool:
+        channel_name = field_of(message, "output_channel", field_of(message, "channel"))
+        if channel_name is None:
+            return False
+
+        channel_key = str(channel_name)
+        channel = self.get_channel(channel_key)
+        if channel is None:
+            return False
+
+        outbound = ChannelMessage(
+            session_id=str(field_of(message, "session_id", f"{channel_key}:default")),
+            channel=channel_key,
+            chat_id=str(field_of(message, "chat_id", "default")),
+            content=content_of(message),
+            context=field_of(message, "context", {}),
+            kind=field_of(message, "kind", "normal"),
+        )
+        await channel.send(outbound)
+        return True
+
+    def wrap_stream(self, message: Envelope, stream: AsyncIterable[StreamEvent]) -> AsyncIterable[StreamEvent]:
+        channel_name = field_of(message, "output_channel", field_of(message, "channel"))
+        if channel_name is None:
+            return stream
+
+        channel_key = str(channel_name)
+        channel = self.get_channel(channel_key)
+        if channel is None:
+            return stream
+
+        return channel.stream_events(message, stream)
+
+    async def quit(self, session_id: str) -> None:
+        tasks = self._ongoing_tasks.pop(session_id, set())
+        for task in tasks:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        logger.info(f"channel.manager quit session_id={session_id}, cancelled {len(tasks)} tasks")
+
+    def enabled_channels(self) -> list[Channel]:
+        if "all" in self._enabled_channels:
+            # Exclude 'cli' channel from 'all' to prevent interference with other channels
+            return [channel for name, channel in self._channels.items() if name != "cli" and channel.enabled]
+        return [
+            channel for name, channel in self._channels.items() if name in self._enabled_channels and channel.enabled
+        ]
+
+    def _on_task_done(self, session_id: str, task: asyncio.Task) -> None:
+        task.exception()  # to log any exception
+        tasks = self._ongoing_tasks.get(session_id, set())
+        tasks.discard(task)
+        if not tasks:
+            self._ongoing_tasks.pop(session_id, None)
+
+    async def listen_and_run(self) -> None:
+        stop_event = asyncio.Event()
+        self.framework.bind_outbound_router(self)
+        for channel in self.enabled_channels():
+            await channel.start(stop_event)
+        logger.info("channel.manager started listening")
+        try:
+            while True:
+                message = await wait_until_stopped(self._messages.get(), stop_event)
+                task = asyncio.create_task(self.framework.process_inbound(message, self._stream_output))
+                task.add_done_callback(functools.partial(self._on_task_done, message.session_id))
+                self._ongoing_tasks.setdefault(message.session_id, set()).add(task)
+        except asyncio.CancelledError:
+            logger.info("channel.manager received shutdown signal")
+        except Exception:
+            logger.exception("channel.manager error")
+            raise
+        finally:
+            self.framework.bind_outbound_router(None)
+            await self.shutdown()
+            logger.info("channel.manager stopped")
+
+    async def shutdown(self) -> None:
+        count = 0
+        for tasks in self._ongoing_tasks.values():
+            for task in tasks:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+                count += 1
+        self._ongoing_tasks.clear()
+        logger.info(f"channel.manager cancelled {count} in-flight tasks")
+        for channel in self.enabled_channels():
+            await channel.stop()

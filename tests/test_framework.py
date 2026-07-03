@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+import typer
+from typer.testing import CliRunner
+
+from backend.app.framework import ApexTranFramework
+from backend.channels.base import Channel
+from backend.channels.message import ChannelMessage
+from backend.core.events import AsyncStreamEvents, StreamEvent
+from backend.hooks.hookspecs import hookimpl
+
+
+class NamedChannel(Channel):
+    def __init__(self, name: str, label: str) -> None:
+        self.name = name
+        self.label = label
+
+    async def start(self, stop_event) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+def test_create_cli_app_sets_workspace_and_context(tmp_path: Path) -> None:
+    framework = ApexTranFramework()
+
+    class CliPlugin:
+        @hookimpl
+        def register_cli_commands(self, app: typer.Typer) -> None:
+            @app.command("workspace")
+            def workspace_command(ctx: typer.Context) -> None:
+                current = ctx.ensure_object(ApexTranFramework)
+                typer.echo(str(current.workspace))
+
+    framework._plugin_manager.register(CliPlugin(), name="cli-plugin")
+    app = framework.create_cli_app()
+
+    result = CliRunner().invoke(app, ["--workspace", str(tmp_path), "workspace"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == str(tmp_path.resolve())
+    assert framework.workspace == tmp_path.resolve()
+
+
+def test_get_channels_prefers_high_priority_plugin_for_duplicate_names() -> None:
+    framework = ApexTranFramework()
+
+    class LowPriorityPlugin:
+        @hookimpl
+        def provide_channels(self, message_handler):
+            return [NamedChannel("shared", "low"), NamedChannel("low-only", "low")]
+
+    class HighPriorityPlugin:
+        @hookimpl
+        def provide_channels(self, message_handler):
+            return [NamedChannel("shared", "high"), NamedChannel("high-only", "high")]
+
+    framework._plugin_manager.register(LowPriorityPlugin(), name="low")
+    framework._plugin_manager.register(HighPriorityPlugin(), name="high")
+
+    channels = framework.get_channels(lambda message: None)
+
+    assert set(channels) == {"shared", "low-only", "high-only"}
+    assert channels["shared"].label == "high"
+    assert channels["low-only"].label == "low"
+    assert channels["high-only"].label == "high"
+
+
+def test_get_system_prompt_uses_priority_order_and_skips_empty_results() -> None:
+    framework = ApexTranFramework()
+
+    class LowPriorityPlugin:
+        @hookimpl
+        def system_prompt(self, prompt: str, state: dict[str, str]) -> str:
+            return "low"
+
+    class HighPriorityPlugin:
+        @hookimpl
+        def system_prompt(self, prompt: str, state: dict[str, str]) -> str | None:
+            return "high"
+
+    class EmptyPlugin:
+        @hookimpl
+        def system_prompt(self, prompt: str, state: dict[str, str]) -> str | None:
+            return None
+
+    framework._plugin_manager.register(LowPriorityPlugin(), name="low")
+    framework._plugin_manager.register(HighPriorityPlugin(), name="high")
+    framework._plugin_manager.register(EmptyPlugin(), name="empty")
+
+    prompt = framework.get_system_prompt(prompt="hello", state={})
+
+    assert prompt == "low\n\nhigh"
+
+
+def test_builtin_cli_exposes_login_and_gateway_command() -> None:
+    framework = ApexTranFramework()
+    framework.load_hooks()
+    app = framework.create_cli_app()
+    runner = CliRunner()
+
+    help_result = runner.invoke(app, ["--help"])
+    gateway_result = runner.invoke(app, ["gateway", "--help"])
+
+    assert help_result.exit_code == 0
+    assert "login" in help_result.stdout
+    assert "gateway" in help_result.stdout
+    assert "│ message" not in help_result.stdout
+    assert gateway_result.exit_code == 0
+    assert "ApexTran gateway" in gateway_result.stdout
+    assert "Start message listeners" in gateway_result.stdout
+
+
+@pytest.mark.asyncio
+async def test_process_inbound_defaults_to_non_streaming_run_model() -> None:
+    framework = ApexTranFramework()
+    saved_outputs: list[str] = []
+
+    class NonStreamingPlugin:
+        @hookimpl
+        def resolve_session(self, message) -> str:
+            return "session"
+
+        @hookimpl
+        def load_state(self, message, session_id) -> dict[str, str]:
+            return {}
+
+        @hookimpl
+        def build_prompt(self, message, session_id, state) -> str:
+            return "prompt"
+
+        @hookimpl
+        async def run_model(self, prompt, session_id, state) -> str:
+            return "plain-text"
+
+        @hookimpl
+        def postprocess_model_output(self, model_output, state) -> str:
+            return model_output
+
+        @hookimpl
+        async def save_state(self, session_id, state, message, model_output) -> None:
+            saved_outputs.append(model_output)
+
+        @hookimpl
+        def render_outbound(self, message, session_id, state, model_output):
+            return [{"content": model_output, "channel": "cli", "chat_id": "room"}]
+
+        @hookimpl
+        async def dispatch_outbound(self, message) -> bool:
+            return True
+
+    framework._plugin_manager.register(NonStreamingPlugin(), name="non-streaming")
+
+    result = await framework.process_inbound(
+        ChannelMessage(session_id="s", channel="cli", chat_id="room", content="hi")
+    )
+
+    assert result.model_output == "plain-text"
+    assert saved_outputs == ["plain-text"]
+
+
+@pytest.mark.asyncio
+async def test_process_inbound_streams_when_requested() -> None:  # noqa: C901
+    framework = ApexTranFramework()
+    stream_calls: list[str] = []
+    wrapped_events: list[str] = []
+
+    class StreamingPlugin:
+        @hookimpl
+        def resolve_session(self, message) -> str:
+            return "session"
+
+        @hookimpl
+        def load_state(self, message, session_id) -> dict[str, str]:
+            return {}
+
+        @hookimpl
+        def build_prompt(self, message, session_id, state) -> str:
+            return "prompt"
+
+        @hookimpl
+        async def run_model_stream(self, prompt, session_id, state):
+            stream_calls.append(prompt)
+
+            async def iterator():
+                yield StreamEvent("text", {"delta": "stream"})
+                yield StreamEvent("text", {"delta": "ed"})
+                yield StreamEvent("final", {"text": "streamed", "ok": True})
+
+            return AsyncStreamEvents(iterator(), state=SimpleNamespace(error=None, usage=None))
+
+        @hookimpl
+        def postprocess_model_output(self, model_output, state) -> str:
+            return model_output
+
+        @hookimpl
+        async def save_state(self, session_id, state, message, model_output) -> None:
+            return None
+
+        @hookimpl
+        def render_outbound(self, message, session_id, state, model_output):
+            return [{"content": model_output, "channel": "cli", "chat_id": "room"}]
+
+        @hookimpl
+        async def dispatch_outbound(self, message) -> bool:
+            return True
+
+    class RecordingRouter:
+        def wrap_stream(self, message, stream):
+            async def iterator():
+                async for event in stream:
+                    wrapped_events.append(event.kind)
+                    yield event
+
+            return iterator()
+
+    framework._plugin_manager.register(StreamingPlugin(), name="streaming")
+    framework.bind_outbound_router(RecordingRouter())
+
+    result = await framework.process_inbound(
+        ChannelMessage(session_id="s", channel="cli", chat_id="room", content="hi"),
+        stream_output=True,
+    )
+
+    assert stream_calls == ["prompt"]
+    assert wrapped_events == ["text", "text", "final"]
+    assert result.model_output == "streamed"
