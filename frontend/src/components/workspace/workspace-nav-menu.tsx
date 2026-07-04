@@ -5,12 +5,11 @@ import {
   ChevronsUpDownIcon,
   LogInIcon,
   LogOutIcon,
-  MailIcon,
   Settings2Icon,
   SunIcon,
 } from "lucide-react";
-import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
+import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 
 import {
@@ -47,15 +46,14 @@ function NavMenuButtonContent({
 }) {
   const { t } = useI18n();
   const user = session?.user;
-  const displayName = user?.name || user?.email || t.ext.account.notSignedIn;
-  const secondary = user?.email ?? t.ext.account.clickToSignIn;
+  const displayName = user?.name ?? user?.email ?? t.ext.account.notSignedIn;
   // 随机但稳定的头像:用用户 id/邮箱做种子(DiceBear),加载失败回退到首字母。
-  const seed = user?.id || user?.email || "guest";
+  const seed = user?.id ?? user?.email ?? "guest";
   const avatarUrl = `https://api.dicebear.com/9.x/thumbs/svg?seed=${encodeURIComponent(seed)}`;
   const fallback = displayName.charAt(0).toUpperCase();
 
   const avatar = (
-    <Avatar className="ring-sidebar-border size-8 shrink-0 ring-1">
+    <Avatar className="ring-sidebar-border size-5 shrink-0 ring-1">
       <AvatarImage src={avatarUrl} alt={displayName} />
       <AvatarFallback className="text-xs">{fallback}</AvatarFallback>
     </Avatar>
@@ -64,11 +62,8 @@ function NavMenuButtonContent({
   return isSidebarOpen ? (
     <div className="flex w-full items-center gap-2 text-left">
       {avatar}
-      <div className="flex min-w-0 flex-1 flex-col leading-tight">
+      <div className="flex min-w-0 flex-1 items-center leading-tight">
         <span className="truncate text-sm font-medium">{displayName}</span>
-        <span className="text-muted-foreground truncate text-xs">
-          {secondary}
-        </span>
       </div>
       <ChevronsUpDownIcon className="text-muted-foreground size-4 shrink-0 opacity-70" />
     </div>
@@ -108,7 +103,7 @@ export function WorkspaceNavMenu() {
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
                   size="lg"
-                  className="border-sidebar-border/60 bg-sidebar-accent/30 hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent h-12 cursor-pointer rounded-lg border"
+                  className="border-sidebar-border/60 bg-sidebar-accent/30 hover:bg-sidebar-accent data-[state=open]:bg-sidebar-accent h-10 cursor-pointer rounded-lg border"
                 >
                   <NavMenuButtonContent
                     isSidebarOpen={isSidebarOpen}
@@ -175,7 +170,7 @@ export function WorkspaceNavMenu() {
           ) : (
             <SidebarMenuButton
               size="lg"
-              className="border-sidebar-border/60 bg-sidebar-accent/30 h-12 rounded-lg border"
+              className="border-sidebar-border/60 bg-sidebar-accent/30 h-10 rounded-lg border"
             >
               <NavMenuButtonContent
                 isSidebarOpen={isSidebarOpen}
@@ -185,7 +180,7 @@ export function WorkspaceNavMenu() {
           )}
         </SidebarMenuItem>
       </SidebarMenu>
-      {/* 设置 / GitHub / 报告 / 联系 / 主题 / 退出,左对齐放在用户按钮下方 */}
+      {/* 设置 / GitHub / 报告 / 主题 / 退出,左对齐放在用户按钮下方 */}
       <div className="flex flex-wrap items-center gap-1 px-1.5 pt-1">
         <button
           type="button"
@@ -215,13 +210,6 @@ export function WorkspaceNavMenu() {
           className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex size-8 items-center justify-center rounded-md transition-colors"
         >
           <BugIcon className="size-5" />
-        </a>
-        <a
-          href="mailto:support@deerflow.tech"
-          aria-label={t.workspace.contactUs}
-          className="text-muted-foreground hover:text-foreground hover:bg-sidebar-accent flex size-8 items-center justify-center rounded-md transition-colors"
-        >
-          <MailIcon className="size-5" />
         </a>
         <button
           type="button"

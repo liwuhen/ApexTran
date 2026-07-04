@@ -38,6 +38,7 @@ export interface Translations {
     exportAsMarkdown: string;
     exportAsJSON: string;
     exportSuccess: string;
+    comingSoon: string;
   };
 
   home: {
@@ -111,12 +112,19 @@ export interface Translations {
 
   // Sidebar
   sidebar: {
-    recentChats: string;
     newChat: string;
-    chats: string;
     dashboard: string;
-    demoChats: string;
+    scheduledTasks: string;
     agents: string;
+    marketHotspots: string;
+    stockHeadlines: string;
+    selectedNews: string;
+    flashNews: string;
+    shortTermTrading: string;
+    longTermValue: string;
+    swingSeeking: string;
+    aiAnalysis: string;
+    marketAnalysis: string;
   };
 
   // Agents
@@ -177,15 +185,9 @@ export interface Translations {
     startConversation: string;
   };
 
-  // Chats
-  chats: {
-    searchChats: string;
-  };
-
   // Page titles (document title)
   pages: {
     appName: string;
-    chats: string;
     newChat: string;
     untitled: string;
   };
@@ -408,12 +410,6 @@ export interface Translations {
       glassDescription: string;
       enableGlass: string;
       surfaceOpacity: string;
-    };
-    chatsHistory: {
-      empty: string;
-      open: string;
-      emptyContent: string;
-      pickOne: string;
     };
     dashboard: {
       overview: string;

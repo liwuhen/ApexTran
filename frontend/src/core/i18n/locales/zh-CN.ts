@@ -49,6 +49,7 @@ export const zhCN: Translations = {
     exportAsMarkdown: "导出为 Markdown",
     exportAsJSON: "导出为 JSON",
     exportSuccess: "对话已导出",
+    comingSoon: "功能开发中,敬请期待",
   },
 
   // Home
@@ -162,11 +163,18 @@ export const zhCN: Translations = {
   // Sidebar
   sidebar: {
     newChat: "新对话",
-    chats: "会话历史",
-    dashboard: "看板",
-    recentChats: "最近的对话",
-    demoChats: "演示对话",
+    dashboard: "数据看板",
+    scheduledTasks: "定时任务",
     agents: "智能体",
+    marketHotspots: "市场热点",
+    stockHeadlines: "股票头条",
+    selectedNews: "精选资讯",
+    flashNews: "7×24快讯",
+    shortTermTrading: "短线博弈",
+    longTermValue: "价值长线",
+    swingSeeking: "趋势波段",
+    aiAnalysis: "AI分析",
+    marketAnalysis: "行情分析",
   },
 
   // Agents
@@ -233,15 +241,9 @@ export const zhCN: Translations = {
     startConversation: "开始新的对话以查看消息",
   },
 
-  // Chats
-  chats: {
-    searchChats: "搜索会话",
-  },
-
   // Page titles (document title)
   pages: {
     appName: "ApexTran",
-    chats: "对话",
     newChat: "新对话",
     untitled: "未命名",
   },
@@ -469,12 +471,6 @@ export const zhCN: Translations = {
       glassDescription: "开启后侧栏与各类弹层呈半透明毛玻璃质感(背景模糊)。",
       enableGlass: "启用磨砂效果",
       surfaceOpacity: "表面不透明度",
-    },
-    chatsHistory: {
-      empty: "暂无会话",
-      open: "打开",
-      emptyContent: "该会话暂无内容",
-      pickOne: "选择左侧的一个会话查看内容",
     },
     dashboard: {
       overview: "工作区总览与 Token 使用情况。",

@@ -49,6 +49,7 @@ export const enUS: Translations = {
     exportAsMarkdown: "Export as Markdown",
     exportAsJSON: "Export as JSON",
     exportSuccess: "Conversation exported",
+    comingSoon: "Coming soon",
   },
 
   // Home
@@ -168,11 +169,18 @@ export const enUS: Translations = {
   // Sidebar
   sidebar: {
     newChat: "New chat",
-    chats: "History",
     dashboard: "Dashboard",
-    recentChats: "Recent chats",
-    demoChats: "Demo chats",
+    scheduledTasks: "Scheduled Tasks",
     agents: "Agents",
+    marketHotspots: "Market Hotspots",
+    stockHeadlines: "Stock Headlines",
+    selectedNews: "Selected News",
+    flashNews: "7×24 Flash",
+    shortTermTrading: "Short-Term Trading",
+    longTermValue: "Value Long-Term",
+    swingSeeking: "Trend Swing",
+    aiAnalysis: "AI Analysis",
+    marketAnalysis: "Market Analysis",
   },
 
   // Agents
@@ -245,15 +253,9 @@ export const enUS: Translations = {
     startConversation: "Start a conversation to see messages here",
   },
 
-  // Chats
-  chats: {
-    searchChats: "Search conversations",
-  },
-
   // Page titles (document title)
   pages: {
     appName: "ApexTran",
-    chats: "Chats",
     newChat: "New chat",
     untitled: "Untitled",
   },
@@ -489,12 +491,6 @@ export const enUS: Translations = {
         "Make the sidebar and overlays translucent with a frosted-glass blur.",
       enableGlass: "Enable frosted effect",
       surfaceOpacity: "Surface opacity",
-    },
-    chatsHistory: {
-      empty: "No conversations",
-      open: "Open",
-      emptyContent: "This conversation has no content",
-      pickOne: "Pick a conversation on the left to view its content",
     },
     dashboard: {
       overview: "Workspace overview and token usage.",

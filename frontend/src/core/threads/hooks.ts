@@ -1,14 +1,13 @@
 import type { AIMessage, Message } from "@langchain/langgraph-sdk";
 import type { ThreadsClient } from "@langchain/langgraph-sdk/client";
 import { useStream } from "@langchain/langgraph-sdk/react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import type { PromptInputMessage } from "@/components/ai-elements/prompt-input";
 
 import { getAPIClient } from "../api";
-import { getBackendBaseURL } from "../config";
 import { useI18n } from "../i18n/hooks";
 import type { FileInMessage } from "../messages/utils";
 import type { LocalSettings } from "../settings";
@@ -594,86 +593,5 @@ export function useThreads(
       return threads;
     },
     refetchOnWindowFocus: false,
-  });
-}
-
-export function useDeleteThread() {
-  const queryClient = useQueryClient();
-  const apiClient = getAPIClient();
-  return useMutation({
-    mutationFn: async ({ threadId }: { threadId: string }) => {
-      await apiClient.threads.delete(threadId);
-
-      const response = await fetch(
-        `${getBackendBaseURL()}/api/threads/${encodeURIComponent(threadId)}`,
-        {
-          method: "DELETE",
-        },
-      );
-
-      if (!response.ok) {
-        const error = await response
-          .json()
-          .catch(() => ({ detail: "Failed to delete local thread data." }));
-        throw new Error(error.detail ?? "Failed to delete local thread data.");
-      }
-    },
-    onSuccess(_, { threadId }) {
-      queryClient.setQueriesData(
-        {
-          queryKey: ["threads", "search"],
-          exact: false,
-        },
-        (oldData: Array<AgentThread> | undefined) => {
-          if (oldData == null) {
-            return oldData;
-          }
-          return oldData.filter((t) => t.thread_id !== threadId);
-        },
-      );
-    },
-    onSettled() {
-      void queryClient.invalidateQueries({ queryKey: ["threads", "search"] });
-    },
-  });
-}
-
-export function useRenameThread() {
-  const queryClient = useQueryClient();
-  const apiClient = getAPIClient();
-  return useMutation({
-    mutationFn: async ({
-      threadId,
-      title,
-    }: {
-      threadId: string;
-      title: string;
-    }) => {
-      await apiClient.threads.updateState(threadId, {
-        values: { title },
-      });
-    },
-    onSuccess(_, { threadId, title }) {
-      queryClient.setQueriesData(
-        {
-          queryKey: ["threads", "search"],
-          exact: false,
-        },
-        (oldData: Array<AgentThread>) => {
-          return oldData.map((t) => {
-            if (t.thread_id === threadId) {
-              return {
-                ...t,
-                values: {
-                  ...t.values,
-                  title,
-                },
-              };
-            }
-            return t;
-          });
-        },
-      );
-    },
   });
 }

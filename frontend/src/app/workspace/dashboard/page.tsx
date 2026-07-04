@@ -1,6 +1,4 @@
 "use client";
-
-import type { Message } from "@langchain/langgraph-sdk";
 import {
   CoinsIcon,
   HistoryIcon,
@@ -34,7 +32,7 @@ export default function DashboardPage() {
   const { perThread, total } = useMemo(() => {
     const rows = (threads ?? [])
       .map((th) => {
-        const u = accumulateUsage((th.values?.messages ?? []) as Message[]);
+        const u = accumulateUsage(th.values?.messages ?? []);
         return {
           id: th.thread_id,
           title: titleOfThread(th),
@@ -189,20 +187,13 @@ export default function DashboardPage() {
             <h2 className="mt-8 text-lg font-semibold">
               {t.ext.dashboard.quickActions}
             </h2>
-            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+            <div className="mt-3">
               <Link
                 href="/workspace/chats/new"
                 className="bg-card hover:bg-accent flex items-center gap-3 rounded-xl border p-5 transition-colors"
               >
                 <MessageSquarePlusIcon className="size-5" />
                 <span className="font-medium">{t.sidebar.newChat}</span>
-              </Link>
-              <Link
-                href="/workspace/chats"
-                className="bg-card hover:bg-accent flex items-center gap-3 rounded-xl border p-5 transition-colors"
-              >
-                <HistoryIcon className="size-5" />
-                <span className="font-medium">{t.sidebar.chats}</span>
               </Link>
             </div>
           </div>
