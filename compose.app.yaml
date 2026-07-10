@@ -1,0 +1,121 @@
+# Overlay for the business microservice (apextran-app) + its infra.
+#
+# Usage:
+#   docker compose -f compose.yaml -f compose.app.yaml up -d
+#
+# Topology (see docs/business-service-架构方案.md §13):
+#   - app-api    : FastAPI, stateless, scale with --scale app-api=N
+#   - app-worker : single leader collector (proactive cache refresh + push)
+#   - redis      : shared snapshot cache + (M3) pub/sub bus
+#   - centrifugo : realtime push fabric (worker publishes, browsers subscribe)
+#   Both app roles share ONE image, differing only by `command`.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: apextran-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-apextran}
+      POSTGRES_USER: ${POSTGRES_USER:-apextran_migrator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      APEXTRAN_AUTH_DB_USER: ${APEXTRAN_AUTH_DB_USER:-auth_app}
+      APEXTRAN_AUTH_DB_PASSWORD: ${APEXTRAN_AUTH_DB_PASSWORD:?APEXTRAN_AUTH_DB_PASSWORD is required}
+      APEXTRAN_MARKET_DB_USER: ${APEXTRAN_MARKET_DB_USER:-market_app}
+      APEXTRAN_MARKET_DB_PASSWORD: ${APEXTRAN_MARKET_DB_PASSWORD:?APEXTRAN_MARKET_DB_PASSWORD is required}
+      APEXTRAN_AGENT_DB_USER: ${APEXTRAN_AGENT_DB_USER:-agent_app}
+      APEXTRAN_AGENT_DB_PASSWORD: ${APEXTRAN_AGENT_DB_PASSWORD:?APEXTRAN_AGENT_DB_PASSWORD is required}
+    volumes:
+      - apextran-postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    restart: unless-stopped
+    command: ["centrifugo"]
+    environment:
+      # Dev defaults — override the keys/secrets in prod via .env.
+      CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY:-dev-api-key}
+      CENTRIFUGO_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_TOKEN_SECRET:-dev-token-secret}
+      CENTRIFUGO_ALLOWED_ORIGINS: "*"
+      # Public market channels: anonymous read, no per-user token needed.
+      CENTRIFUGO_ALLOW_SUBSCRIBE_FOR_ANONYMOUS: "true"
+      CENTRIFUGO_ALLOW_SUBSCRIBE_FOR_CLIENT: "true"
+      # Expose /health so readiness probes (and the start script) can poll it.
+      CENTRIFUGO_HEALTH: "true"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "127.0.0.1:8400:8000"   # ws://…/connection/websocket + /api
+
+  app-api:
+    build:
+      context: .
+      dockerfile: services/app/Dockerfile
+    command: ["apextran-app", "serve"]
+    restart: unless-stopped
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8100
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-prod}
+      APP_CACHE_BACKEND: redis
+      APP_REDIS_URL: redis://redis:6379/0
+      APP_MIGRATION_DB_URL: ${APP_MIGRATION_DB_URL_DOCKER:-}
+      APP_DB_URL: ${APP_DB_URL_DOCKER:-}
+      APP_MARKET_SOURCE: ${APP_MARKET_SOURCE:-mock}   # flip to `akshare` when ready
+      APP_AGENT_BASE_URL: http://ApexTran:8000        # agent-service (M3 /analyze)
+      APP_PROXY_SECRET: ${ApexTran_WEB_PROXY_SECRET:-} # shared inter-service secret
+      APP_INTERNAL_JWT_SECRET: ${APEXTRAN_INTERNAL_JWT_SECRET:-}
+      APP_INTERNAL_JWT_ISSUER: ${APEXTRAN_INTERNAL_JWT_ISSUER:-apextran-bff}
+      APP_INTERNAL_JWT_AUDIENCE: ${APEXTRAN_INTERNAL_JWT_AUDIENCE:-apextran-app}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-8100}:8100"
+
+  app-worker:
+    build:
+      context: .
+      dockerfile: services/app/Dockerfile
+    command: ["apextran-app", "worker"]
+    restart: unless-stopped
+    environment:
+      APP_CACHE_BACKEND: redis
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-prod}
+      APP_REDIS_URL: redis://redis:6379/0
+      APP_MIGRATION_DB_URL: ${APP_MIGRATION_DB_URL_DOCKER:-}
+      APP_DB_URL: ${APP_DB_URL_DOCKER:-}
+      APP_MARKET_SOURCE: ${APP_MARKET_SOURCE:-mock}
+      APP_CENTRIFUGO_API_URL: http://centrifugo:8000/api
+      APP_CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY:-dev-api-key}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      centrifugo:
+        condition: service_started
+
+volumes:
+  apextran-postgres-data:

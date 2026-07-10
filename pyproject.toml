@@ -66,6 +66,14 @@ ApexTran = "backend.__main__:app"
 # TODO: point these at the ApexTran project once it is published.
 Repository = "https://github.com/lss/ApexTran"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# uv workspace — 业务微服务 services/app 作为独立成员。
+# 依赖在其自己的 pyproject 里声明(fastapi/redis/akshare…),不污染 backend;
+# 二者互不 import,只在运行时经 HTTP/Redis 通信。见 docs/business-service-架构方案.md。
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.uv.workspace]
+members = ["services/app"]
+
 [dependency-groups]
 dev = [
     "pytest>=7.2.0",
@@ -162,6 +170,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]                  # asserts are fine in tests
+"services/*/tests/*" = ["S101"]       # asserts are fine in service tests too
 "backend/inventory/*" = ["S608"]      # SQL built from controlled identifiers; values are bound params
 
 [tool.ruff.format]

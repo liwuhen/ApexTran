@@ -24,7 +24,10 @@ export function WorkspaceContainer({
   ...props
 }: React.ComponentProps<"div">) {
   return (
-    <div className={cn("flex h-screen w-full flex-col", className)} {...props}>
+    <div
+      className={cn("flex h-screen w-full min-w-0 flex-col", className)}
+      {...props}
+    >
       {children}
     </div>
   );
@@ -114,12 +117,12 @@ export function WorkspaceBody({
   return (
     <main
       className={cn(
-        "relative flex min-h-0 w-full flex-1 flex-col items-center",
+        "relative flex min-h-0 w-full min-w-0 flex-1 flex-col items-center",
         className,
       )}
       {...props}
     >
-      <div className="flex h-full w-full flex-col items-center">{children}</div>
+      <div className="flex h-full w-full min-w-0 flex-col">{children}</div>
     </main>
   );
 }

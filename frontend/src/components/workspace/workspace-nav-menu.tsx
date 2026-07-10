@@ -12,11 +12,7 @@ import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -83,6 +79,7 @@ export function WorkspaceNavMenu() {
   const { resolvedTheme, setTheme } = useTheme();
   const router = useRouter();
   const { data: session } = authClient.useSession();
+  const stableSession = mounted ? session : null;
 
   // 挂载后才渲染 Radix 下拉,避免其自动生成的 id 在 SSR/客户端不一致导致水合报错。
   useEffect(() => {
@@ -107,7 +104,7 @@ export function WorkspaceNavMenu() {
                 >
                   <NavMenuButtonContent
                     isSidebarOpen={isSidebarOpen}
-                    session={session}
+                    session={stableSession}
                   />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
@@ -174,7 +171,7 @@ export function WorkspaceNavMenu() {
             >
               <NavMenuButtonContent
                 isSidebarOpen={isSidebarOpen}
-                session={session}
+                session={stableSession}
               />
             </SidebarMenuButton>
           )}

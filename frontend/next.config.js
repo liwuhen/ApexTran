@@ -39,27 +39,27 @@ const config = {
     // ApexTran serves both the LangGraph-compatible runtime and the gateway
     // resource API from a single WebChannel (default 127.0.0.1:8000). There is
     // no nginx in front, so the frontend proxies /api/* to it directly here.
-    const langgraphURL = getInternalServiceURL(
-      "DEER_FLOW_INTERNAL_LANGGRAPH_BASE_URL",
-      "http://127.0.0.1:8000",
-    );
     const gatewayURL = getInternalServiceURL(
       "DEER_FLOW_INTERNAL_GATEWAY_BASE_URL",
       "http://127.0.0.1:8000",
     );
 
-    if (!process.env.NEXT_PUBLIC_LANGGRAPH_BASE_URL) {
-      // The SDK base URL is /api/langgraph; strip that prefix so requests hit
-      // the gateway's LangGraph-native paths (/threads, /assistants, ...).
-      rewrites.push({
-        source: "/api/langgraph",
-        destination: langgraphURL,
-      });
-      rewrites.push({
-        source: "/api/langgraph/:path*",
-        destination: `${langgraphURL}/:path*`,
-      });
-    }
+    // apextran-app business microservice (market data + analysis). In the nginx
+    // stack /api/v1/* is routed to it by nginx; this rewrite makes the same
+    // paths work when the frontend is hit directly on :3000 (plain `next dev`).
+    // Public market data needs no auth, so a straight proxy is fine here.
+    const appURL = getInternalServiceURL(
+      "DEER_FLOW_INTERNAL_APP_BASE_URL",
+      "http://127.0.0.1:8100",
+    );
+    rewrites.push({
+      source: "/api/v1/:path*",
+      destination: `${appURL}/api/v1/:path*`,
+    });
+
+    // 注意:/api/langgraph/* 不再用 rewrite,而是由服务端 BFF route handler
+    // (src/app/api/langgraph/[...path]/route.ts)独占——它在转发前校验 better-auth
+    // 会话并注入受信租户身份 X-ApexTran-User。用 rewrite 会绕过鉴权,故移除。
 
     if (!process.env.NEXT_PUBLIC_BACKEND_BASE_URL) {
       // Forward gateway resource endpoints, keeping the /api prefix. These are
