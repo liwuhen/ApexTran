@@ -14,7 +14,7 @@ import {
   Trash2Icon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,10 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  StockChartDialogHost,
+  useStockChartDialog,
+} from "@/components/workspace/market";
+import {
   WorkspaceBody,
   WorkspaceContainer,
   WorkspaceHeader,
@@ -39,7 +43,6 @@ import { useI18n } from "@/core/i18n/hooks";
 import {
   useAddDefaultWatchlistItem,
   useDefaultWatchlistItems,
-  useMarketQuotes,
   useRemoveDefaultWatchlistItem,
   useStockSearch,
 } from "@/core/market/hooks";
@@ -63,11 +66,17 @@ type FavoriteSort = {
   direction: "asc" | "desc";
 };
 
+function stockIdentityKey(stock: Pick<StockSearchItem, "market" | "symbol">) {
+  return `${stock.market.trim()}:${stock.symbol.trim()}`;
+}
+
 export default function FavoritesPage() {
   const { t } = useI18n();
   const [searchInput, setSearchInput] = useState("");
   const [isSearchMenuOpen, setIsSearchMenuOpen] = useState(false);
+  const searchAreaRef = useRef<HTMLDivElement | null>(null);
   const [favoriteSort, setFavoriteSort] = useState<FavoriteSort | null>(null);
+  const stockChartDialog = useStockChartDialog();
   const [favoritePage, setFavoritePage] = useState(1);
   const [favoritePageSize, setFavoritePageSize] =
     useState<FavoritePageSize>(30);
@@ -77,50 +86,13 @@ export default function FavoritesPage() {
     limit: SEARCH_LIMIT,
     enabled: searchQuery.length > 0,
   });
-  const watchlist = useDefaultWatchlistItems();
-  const quoteSymbols = useMemo(
-    () =>
-      watchlist.items.map((item) =>
-        item.instrument.market
-          ? `${item.instrument.market}:${item.instrument.symbol}`
-          : item.instrument.symbol,
-      ),
-    [watchlist.items],
-  );
-  const quotes = useMarketQuotes({
-    symbols: quoteSymbols,
-    enabled: quoteSymbols.length > 0,
-  });
-  const quoteByRef = useMemo(() => {
-    const map = new Map<string, StockSearchItem>();
-    for (const quote of quotes.quotes) {
-      map.set(quote.market ? `${quote.market}:${quote.symbol}` : quote.symbol, {
-        symbol: quote.symbol,
-        name: "",
-        market: quote.market,
-        latest_price: quote.latest_price,
-        change_pct: quote.change_pct,
-        turnover_rate: quote.turnover_rate,
-        amount: quote.amount,
-        float_market_cap: quote.float_market_cap,
-        total_market_cap: quote.total_market_cap,
-        concept: "",
-        source: quote.source,
-        updated_at: quote.updated_at,
-      });
-    }
-    return map;
-  }, [quotes.quotes]);
+  const watchlist = useDefaultWatchlistItems({ includeQuotes: true });
   const addWatchlistItem = useAddDefaultWatchlistItem();
   const removeWatchlistItem = useRemoveDefaultWatchlistItem();
   const favorites = useMemo(
     () =>
       watchlist.items.map((item) => {
-        const ref = item.instrument.market
-          ? `${item.instrument.market}:${item.instrument.symbol}`
-          : item.instrument.symbol;
-        const quote =
-          quoteByRef.get(ref) ?? quoteByRef.get(item.instrument.symbol);
+        const quote = item.quote;
         return {
           ...item.instrument,
           latest_price: quote?.latest_price ?? item.instrument.latest_price,
@@ -136,15 +108,25 @@ export default function FavoritesPage() {
           addedAt: item.created_at,
         };
       }),
-    [quoteByRef, watchlist.items],
+    [watchlist.items],
   );
 
   useEffect(() => {
     document.title = `${t.sidebar.favorites} - ${t.pages.appName}`;
   }, [t.sidebar.favorites, t.pages.appName]);
 
-  const favoriteSymbols = useMemo(
-    () => new Set(favorites.map((item) => item.symbol)),
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!searchAreaRef.current?.contains(event.target as Node)) {
+        setIsSearchMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
+  const favoriteRefs = useMemo(
+    () => new Set(favorites.map(stockIdentityKey)),
     [favorites],
   );
   const sortedFavorites = useMemo(
@@ -182,15 +164,15 @@ export default function FavoritesPage() {
   };
 
   const addFavorite = (stock: StockSearchItem) => {
-    if (favoriteSymbols.has(stock.symbol) || addWatchlistItem.isPending) {
+    if (favoriteRefs.has(stockIdentityKey(stock)) || addWatchlistItem.isPending) {
       return;
     }
     addWatchlistItem.mutate(stock);
     setIsSearchMenuOpen(false);
   };
 
-  const removeFavorite = (symbol: string) => {
-    removeWatchlistItem.mutate(symbol);
+  const removeFavorite = (stock: FavoriteStock) => {
+    removeWatchlistItem.mutate(stock);
   };
 
   const showSearchSkeleton =
@@ -202,14 +184,10 @@ export default function FavoritesPage() {
     watchlist.error ?? addWatchlistItem.error ?? removeWatchlistItem.error;
   const isRefreshing =
     watchlist.isFetching ||
-    quotes.isFetching ||
     (searchQuery ? isFetching : false);
 
   const refreshFavorites = () => {
     void watchlist.refetch();
-    if (quoteSymbols.length > 0) {
-      void quotes.refetch();
-    }
     if (searchQuery) {
       void refetch();
     }
@@ -253,15 +231,7 @@ export default function FavoritesPage() {
                       {t.market.favoriteSubtitle}
                     </p>
                   </div>
-                  <div
-                    className="relative z-30 w-full max-w-52"
-                    onMouseEnter={() => {
-                      if (searchInput.trim()) {
-                        setIsSearchMenuOpen(true);
-                      }
-                    }}
-                    onMouseLeave={() => setIsSearchMenuOpen(false)}
-                  >
+                  <div ref={searchAreaRef} className="relative z-30 w-full max-w-52">
                     <div className="flex items-center gap-3 rounded-2xl border border-white/12 bg-white/10 px-4 py-3 backdrop-blur">
                       <SearchIcon className="size-4 shrink-0 text-slate-300" />
                       <Input
@@ -270,11 +240,8 @@ export default function FavoritesPage() {
                           setSearchInput(event.target.value);
                           setIsSearchMenuOpen(true);
                         }}
-                        onFocus={() => {
-                          if (searchInput.trim()) {
-                            setIsSearchMenuOpen(true);
-                          }
-                        }}
+                        onFocus={() => setIsSearchMenuOpen(true)}
+                        onClick={() => setIsSearchMenuOpen(true)}
                         placeholder={t.market.favoriteSearchPlaceholder}
                         aria-label={t.market.favoriteSearchPlaceholder}
                         className="h-auto border-0 bg-transparent px-0 py-0 text-white shadow-none placeholder:text-slate-300 focus-visible:ring-0"
@@ -289,7 +256,7 @@ export default function FavoritesPage() {
                         loading={showSearchSkeleton}
                         error={error}
                         isFetching={isFetching}
-                        favoriteSymbols={favoriteSymbols}
+                        favoriteRefs={favoriteRefs}
                         disabled={isMutatingWatchlist}
                         query={searchQuery}
                         onAdd={addFavorite}
@@ -356,6 +323,7 @@ export default function FavoritesPage() {
                       onSortChange={toggleFavoriteSort}
                       onPageChange={setFavoritePage}
                       onPageSizeChange={setFavoritePageSize}
+                      onSelect={stockChartDialog.open}
                       onRemove={removeFavorite}
                     />
                   )}
@@ -365,6 +333,7 @@ export default function FavoritesPage() {
           </div>
         </ScrollArea>
       </WorkspaceBody>
+      <StockChartDialogHost controller={stockChartDialog} />
     </WorkspaceContainer>
   );
 }
@@ -374,7 +343,7 @@ function SearchResultsMenu({
   loading,
   error,
   isFetching,
-  favoriteSymbols,
+  favoriteRefs,
   disabled,
   query,
   onAdd,
@@ -384,7 +353,7 @@ function SearchResultsMenu({
   loading: boolean;
   error: Error | null;
   isFetching: boolean;
-  favoriteSymbols: Set<string>;
+  favoriteRefs: Set<string>;
   disabled: boolean;
   query: string;
   onAdd: (stock: StockSearchItem) => void;
@@ -425,9 +394,9 @@ function SearchResultsMenu({
         <div className="max-h-[420px] divide-y overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {stocks.map((stock) => (
             <SearchResultRow
-              key={stock.symbol}
+              key={stockIdentityKey(stock)}
               stock={stock}
-              added={favoriteSymbols.has(stock.symbol)}
+              added={favoriteRefs.has(stockIdentityKey(stock))}
               disabled={disabled}
               onAdd={() => onAdd(stock)}
             />
@@ -460,6 +429,7 @@ function FavoriteStockTable({
   onSortChange,
   onPageChange,
   onPageSizeChange,
+  onSelect,
   onRemove,
 }: {
   stocks: FavoriteStock[];
@@ -472,7 +442,8 @@ function FavoriteStockTable({
   onSortChange: (key: FavoriteSortKey) => void;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: FavoritePageSize) => void;
-  onRemove: (symbol: string) => void;
+  onSelect: (stock: FavoriteStock) => void;
+  onRemove: (stock: FavoriteStock) => void;
 }) {
   const { t } = useI18n();
 
@@ -533,8 +504,18 @@ function FavoriteStockTable({
             <tbody className="divide-y">
               {stocks.map((stock) => (
                 <tr
-                  key={stock.symbol}
-                  className="hover:bg-accent/40 transition-colors"
+                  key={stockIdentityKey(stock)}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${stock.name} ${t.market.viewChart}`}
+                  onClick={() => onSelect(stock)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelect(stock);
+                    }
+                  }}
+                  className="hover:bg-accent/40 focus-visible:ring-ring/50 cursor-pointer transition-colors outline-none focus-visible:ring-[3px]"
                 >
                   <td className="px-5 py-3">
                     <div className="flex min-w-0 items-center gap-3">
@@ -559,7 +540,11 @@ function FavoriteStockTable({
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => onRemove(stock.symbol)}
+                      onClick={(event) => {
+                        // The row opens the chart dialog; deleting must not.
+                        event.stopPropagation();
+                        onRemove(stock);
+                      }}
                       disabled={disabled}
                       aria-label={t.common.delete}
                       className="text-muted-foreground hover:text-destructive size-8 -translate-x-2"

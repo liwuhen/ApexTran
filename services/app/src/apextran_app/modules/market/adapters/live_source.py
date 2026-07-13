@@ -12,8 +12,11 @@ names/quotes:
 - **腾讯行情** (``qt.gtimg.cn``): fills name / change / price, covering symbols that
   are on the Eastmoney board but not the 同花顺 one.
 
-Each source is best-effort: if one is down the others still yield a hotlist.
-News/flash keep using the akshare source (delegated).
+The service keeps the last complete snapshot when either ranking source is down;
+news/flash keep using the akshare source (delegated).
+
+Charts (日K / 分时) come from 腾讯 ``web.ifzq.gtimg.cn`` for the same reason the
+hotlist avoids akshare: Eastmoney's ``push2his`` kline host answers empty here.
 """
 
 from __future__ import annotations
@@ -21,21 +24,30 @@ from __future__ import annotations
 import asyncio
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from loguru import logger
 
-from ..domain.models import FlashItem, HotItem, NewsItem, StockSearchItem
+from ..domain.models import FlashItem, HotItem, IntradayPoint, IntradaySeries, KlineBar, NewsItem, StockSearchItem
 from .akshare_source import AkshareMarketSource
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 _THS_URL = "https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock"
 _EM_RANK_URL = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList"
 _TX_QUOTE_URL = "https://qt.gtimg.cn/q="
+_TX_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+_TX_MINUTE_URL = "https://web.ifzq.gtimg.cn/appstock/app/minute/query"
 _TIMEOUT = 10.0
 _TOP_N = 60
 _TX_CHUNK = 60
+# 腾讯 quotes volume in 手; one 手 is 100 shares. Needed to turn the 分时 cumulative
+# turnover into a VWAP (均价).
+_SHARES_PER_LOT = 100
+# 深交所 runs 盘后定价交易 until 15:30 and Tencent appends those ticks to the 分时
+# series. They are not part of the continuous session — drop them so the curve
+# ends at the close like every other A-share client draws it.
+_SESSION_CLOSE = "1500"
 # 同花顺热榜「大家都在看」= real-time heat (type=hour); "day" is the full-day
 # accumulation. list_type must be "normal" — other values return an empty list.
 _THS_TYPE = "hour"
@@ -52,9 +64,17 @@ class LiveMarketSource:
     async def fetch_hotlist(self) -> list[HotItem]:
         async with httpx.AsyncClient(headers={"User-Agent": _UA}, timeout=_TIMEOUT) as client:
             ths, em = await asyncio.gather(self._ths_hot(client), self._em_hot(client))
+            # A failed or empty ranking source makes the merged result partial.
+            # Raising lets MarketService serve its last-good cache and leaves the
+            # database snapshot untouched instead of shrinking it.
+            if not ths or not em:
+                raise RuntimeError("market hotlist sources returned an incomplete snapshot")
             codes = sorted(set(ths) | set(em))
             quotes = await self._tencent_quotes(client, codes)
-        return self._merge(ths, em, quotes)
+        items = self._merge(ths, em, quotes)
+        if not items:
+            raise RuntimeError("market hotlist sources returned an empty snapshot")
+        return items
 
     async def search_stocks(self, query: str, limit: int = 20) -> list[StockSearchItem]:
         return await self._news.search_stocks(query, limit)
@@ -74,9 +94,45 @@ class LiveMarketSource:
     async def fetch_flash(self) -> list[FlashItem]:
         return await self._news.fetch_flash()
 
+    # ---- charts ------------------------------------------------------------
+
+    async def fetch_daily_kline(self, symbol: str, limit: int = 180) -> list[KlineBar]:
+        """腾讯 日K (前复权) → oldest-first candles.
+
+        Tencent appends today's in-progress bar on top of the ``limit`` closed
+        ones, so the returned list can be one longer than requested.
+        """
+        code = _tx_symbol(symbol)
+        async with httpx.AsyncClient(headers={"User-Agent": _UA}, timeout=_TIMEOUT) as client:
+            resp = await client.get(_TX_KLINE_URL, params={"param": f"{code},day,,,{limit},qfq"})
+            resp.raise_for_status()
+            node = (resp.json().get("data") or {}).get(code) or {}
+        # 前复权 lands under "qfqday"; a symbol with no adjustment history (e.g. a
+        # recent listing) only carries the raw "day" series.
+        rows = node.get("qfqday") or node.get("day") or []
+        return [bar for row in rows if (bar := _kline_bar(row)) is not None]
+
+    async def fetch_intraday(self, symbol: str) -> IntradaySeries:
+        """腾讯 分时 → one trading day of minute ticks plus the 昨收 baseline."""
+        code = _tx_symbol(symbol)
+        async with httpx.AsyncClient(headers={"User-Agent": _UA}, timeout=_TIMEOUT) as client:
+            resp = await client.get(_TX_MINUTE_URL, params={"code": code})
+            resp.raise_for_status()
+            node = (resp.json().get("data") or {}).get(code) or {}
+        minute = node.get("data") or {}
+        quote = (node.get("qt") or {}).get(code) or []
+        return IntradaySeries(
+            symbol=symbol,
+            date=_iso_date(str(minute.get("date", ""))),
+            # qt is 腾讯's flat quote array; index 4 is 昨收.
+            prev_close=_to_optional_float(quote[4]) if len(quote) > 4 else None,
+            points=_intraday_points(minute.get("data") or []),
+            updated_at=datetime.now(UTC),
+        )
+
     # ---- sources -----------------------------------------------------------
 
-    async def _ths_hot(self, client: httpx.AsyncClient) -> dict[str, dict[str, Any]]:
+    async def _ths_hot(self, client: httpx.AsyncClient) -> dict[str, dict[str, Any]] | None:
         """同花顺 24h 热榜 → {code: {name, change_pct, concept, ths_rank, popularity}}."""
         try:
             resp = await client.get(
@@ -88,7 +144,7 @@ class LiveMarketSource:
             rows = resp.json()["data"]["stock_list"]
         except Exception as exc:
             logger.warning("market: 同花顺 hot list failed: {}", exc)
-            return {}
+            return None
         out: dict[str, dict[str, Any]] = {}
         for row in rows:
             code = str(row.get("code", "")).strip()
@@ -115,7 +171,7 @@ class LiveMarketSource:
             }
         return out
 
-    async def _em_hot(self, client: httpx.AsyncClient) -> dict[str, dict[str, Any]]:
+    async def _em_hot(self, client: httpx.AsyncClient) -> dict[str, dict[str, Any]] | None:
         """东方财富人气榜 → {code: {em_rank}} (App API, not the blocked push2 host)."""
         try:
             resp = await client.post(
@@ -132,7 +188,7 @@ class LiveMarketSource:
             data = resp.json().get("data") or []
         except Exception as exc:
             logger.warning("market: 东方财富 hot rank failed: {}", exc)
-            return {}
+            return None
         out: dict[str, dict[str, Any]] = {}
         for i, entry in enumerate(data):
             sc = str(entry.get("sc", "")).strip()  # e.g. SZ301308 / SH600580
@@ -228,6 +284,54 @@ def _parse_boards(tag: str) -> int:
     if match:
         return _to_int(match.group(1) or match.group(2))
     return 0
+
+
+def _kline_bar(row: Any) -> KlineBar | None:
+    """腾讯 day row ``[date, open, close, high, low, volume]`` → ``KlineBar``, or None if malformed."""
+    if not isinstance(row, list) or len(row) < 6:
+        return None
+    date = str(row[0]).strip()
+    prices = [_to_optional_float(value) for value in row[1:5]]
+    if not date or any(price is None for price in prices):
+        return None
+    open_, close, high, low = cast("list[float]", prices)
+    return KlineBar(date=date, open=open_, high=high, low=low, close=close, volume=_to_float(row[5]))
+
+
+def _intraday_points(rows: Any) -> list[IntradayPoint]:
+    """腾讯 minute rows ``"HHMM price cum_volume cum_turnover"`` → the 分时 curve."""
+    points: list[IntradayPoint] = []
+    for raw in rows:
+        parts = str(raw).split()
+        if len(parts) < 3 or len(parts[0]) < 4 or parts[0] > _SESSION_CLOSE:
+            continue
+        price = _to_optional_float(parts[1])
+        if price is None:
+            continue
+        points.append(
+            IntradayPoint(
+                time=f"{parts[0][:2]}:{parts[0][2:4]}",
+                price=price,
+                avg_price=_vwap(parts[2], parts[3]) if len(parts) > 3 else None,
+            )
+        )
+    return points
+
+
+def _vwap(cumulative_volume: str, cumulative_turnover: str) -> float | None:
+    """Session VWAP up to this minute. Both inputs are cumulative from the open."""
+    shares = _to_float(cumulative_volume) * _SHARES_PER_LOT
+    turnover = _to_float(cumulative_turnover)
+    if shares <= 0 or turnover <= 0:
+        return None
+    return round(turnover / shares, 3)
+
+
+def _iso_date(compact: str) -> str:
+    """``"20260710"`` → ``"2026-07-10"``; anything else passes through untouched."""
+    if len(compact) != 8 or not compact.isdigit():
+        return compact
+    return f"{compact[:4]}-{compact[4:6]}-{compact[6:]}"
 
 
 def _chunks(seq: list[str], size: int) -> list[list[str]]:

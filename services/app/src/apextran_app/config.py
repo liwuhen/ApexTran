@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://127.0.0.1:6379/0"
     db_url: str = ""
     migration_db_url: str = ""
-    market_source: str = "mock"  # "mock" | "akshare"
+    market_source: str = "mock"  # "mock" | "akshare" | "live"
 
     # agent-service contract (used by the `analysis` module).
     agent_client: str = "local"  # "local" | "http"
@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     # Worker refresh cadence (seconds). M2 makes this trading-calendar aware.
     refresh_interval: float = 15.0
     stock_pool_refresh_interval: float = 86400.0
+    snapshot_refresh_interval: float = 10.0
+    snapshot_symbol_limit: int = 100
+
+    # Fast path: adding a watchlist item queues an immediate refresh (quote +
+    # charts in parallel) in the API process. Off = rely on the worker cycle.
+    watchlist_refresh_on_add: bool = True
+
+    # First chart read of a symbol with no snapshot fills it from the source
+    # (single-flight, bounded, time-boxed) instead of returning empty for up to
+    # a worker cycle. Off = charts appear only after the worker refreshes.
+    chart_fill_on_read: bool = True
+    chart_fill_timeout: float = 3.0
 
     # Worker leader-lock TTL (seconds). A dead leader is replaced within one TTL.
     leader_ttl: float = 15.0

@@ -25,10 +25,10 @@ export interface StockSearchItem {
   market: string;
   latest_price: number | null;
   change_pct: number | null;
-  turnover_rate?: number | null;
-  amount?: number | null;
-  float_market_cap?: number | null;
-  total_market_cap?: number | null;
+  turnover_rate: number | null;
+  amount: number | null;
+  float_market_cap: number | null;
+  total_market_cap: number | null;
   concept: string;
   source: string;
   updated_at: string; // ISO 8601
@@ -39,11 +39,34 @@ export interface StockQuoteItem {
   market: string;
   latest_price: number | null;
   change_pct: number | null;
-  turnover_rate?: number | null;
-  amount?: number | null;
-  float_market_cap?: number | null;
-  total_market_cap?: number | null;
+  turnover_rate: number | null;
+  amount: number | null;
+  float_market_cap: number | null;
+  total_market_cap: number | null;
   source: string;
+  updated_at: string; // ISO 8601
+}
+
+export interface KlineBar {
+  date: string; // YYYY-MM-DD
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number; // 手 (100 shares)
+}
+
+export interface IntradayPoint {
+  time: string; // HH:MM, exchange local time
+  price: number;
+  avg_price: number | null;
+}
+
+export interface IntradaySeries {
+  symbol: string;
+  date: string; // YYYY-MM-DD
+  prev_close: number | null;
+  points: IntradayPoint[];
   updated_at: string; // ISO 8601
 }
 
@@ -63,6 +86,10 @@ export interface WatchlistItem {
   note: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface WatchlistItemWithQuote extends WatchlistItem {
+  quote: StockQuoteItem | null;
 }
 
 export interface NewsItem {

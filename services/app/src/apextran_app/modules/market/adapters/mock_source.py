@@ -6,9 +6,20 @@ plausible movement on refresh, but no network/keys are needed (M1).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import math
+from datetime import UTC, date, datetime, timedelta
 
-from ..domain.models import FlashItem, FlashLevel, HotItem, NewsItem, StockSearchItem
+from ..domain.models import (
+    FlashItem,
+    FlashLevel,
+    HotItem,
+    IntradayPoint,
+    IntradaySeries,
+    KlineBar,
+    NewsItem,
+    StockSearchItem,
+)
+from ..market_ref import market_for_symbol
 
 _SAMPLE = [
     ("600519", "贵州茅台", "白酒"),
@@ -77,9 +88,13 @@ class MockMarketSource:
             StockSearchItem(
                 symbol=symbol,
                 name=name,
-                market=_market_for_symbol(symbol),
+                market=market_for_symbol(symbol),
                 latest_price=round(10 + index * 3.6 + now.minute * 0.03, 2),
                 change_pct=round(((now.minute + index * 3) % 21) - 10 + 0.05, 2),
+                turnover_rate=round(0.8 + index * 0.17, 2),
+                amount=float(150_000_000 + index * 32_000_000),
+                float_market_cap=float(12_000_000_000 + index * 2_500_000_000),
+                total_market_cap=float(18_000_000_000 + index * 3_200_000_000),
                 concept=concept,
                 source="MockWire",
                 updated_at=now,
@@ -95,7 +110,7 @@ class MockMarketSource:
             StockSearchItem(
                 symbol=symbol,
                 name=name,
-                market=_market_for_symbol(symbol),
+                market=market_for_symbol(symbol),
                 latest_price=None,
                 change_pct=None,
                 concept=concept,
@@ -104,6 +119,47 @@ class MockMarketSource:
             )
             for symbol, name, concept in _SAMPLE
         ]
+
+    async def fetch_daily_kline(self, symbol: str, limit: int = 180) -> list[KlineBar]:
+        base = _seed_price(symbol)
+        bars: list[KlineBar] = []
+        for index, day in enumerate(_recent_trading_days(limit)):
+            close = base + math.sin(index / 6.0) * base * 0.06 + index * base * 0.0015
+            open_ = close - math.cos(index / 5.0) * base * 0.01
+            bars.append(
+                KlineBar(
+                    date=day.isoformat(),
+                    open=round(open_, 2),
+                    high=round(max(open_, close) * 1.012, 2),
+                    low=round(min(open_, close) * 0.988, 2),
+                    close=round(close, 2),
+                    volume=round(80_000 + math.fabs(math.sin(index / 4.0)) * 60_000, 0),
+                )
+            )
+        return bars
+
+    async def fetch_intraday(self, symbol: str) -> IntradaySeries:
+        now = _now()
+        base = _seed_price(symbol)
+        points: list[IntradayPoint] = []
+        total = 0.0
+        for index, minute in enumerate(_session_minutes()):
+            price = base * (1 + math.sin(index / 24.0) * 0.012 + index * 0.00002)
+            total += price
+            points.append(
+                IntradayPoint(
+                    time=minute,
+                    price=round(price, 2),
+                    avg_price=round(total / (index + 1), 3),
+                )
+            )
+        return IntradaySeries(
+            symbol=symbol,
+            date=now.date().isoformat(),
+            prev_close=round(base, 2),
+            points=points,
+            updated_at=now,
+        )
 
     async def fetch_headlines(self, symbol: str | None = None) -> list[NewsItem]:
         now = _now()
@@ -248,11 +304,27 @@ class MockMarketSource:
         return items
 
 
-def _market_for_symbol(symbol: str) -> str:
-    if symbol.startswith("6"):
-        return "沪市A股"
-    if symbol.startswith(("0", "3")):
-        return "深市A股"
-    if symbol.startswith(("4", "8", "92")):
-        return "北交所"
-    return "A股"
+def _seed_price(symbol: str) -> float:
+    """A stable per-symbol base price, so a stock's chart looks the same on every reload."""
+    digits = "".join(char for char in symbol if char.isdigit())
+    return 10.0 + (int(digits[-3:]) % 90 if digits else 0)
+
+
+def _recent_trading_days(count: int) -> list[date]:
+    """The last ``count`` weekdays, oldest first. Ignores holidays — it's mock data."""
+    days: list[date] = []
+    cursor = _now().date()
+    while len(days) < count:
+        if cursor.weekday() < 5:
+            days.append(cursor)
+        cursor -= timedelta(days=1)
+    return list(reversed(days))
+
+
+def _session_minutes() -> list[str]:
+    """The 242 minutes of an A-share session: 09:30–11:30 and 13:00–15:00, inclusive."""
+    return [
+        f"{minute // 60:02d}:{minute % 60:02d}"
+        for start, end in ((9 * 60 + 30, 11 * 60 + 30), (13 * 60, 15 * 60))
+        for minute in range(start, end + 1)
+    ]

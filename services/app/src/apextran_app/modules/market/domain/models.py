@@ -46,6 +46,10 @@ class StockSearchItem(BaseModel):
     market: str = ""
     latest_price: float | None = None
     change_pct: float | None = None
+    turnover_rate: float | None = Field(default=None, description="换手率，单位：百分点")
+    amount: float | None = Field(default=None, description="成交额，单位：人民币元")
+    float_market_cap: float | None = Field(default=None, description="流通市值，单位：人民币元")
+    total_market_cap: float | None = Field(default=None, description="总市值，单位：人民币元")
     concept: str = ""
     source: str = ""
     updated_at: datetime
@@ -58,7 +62,40 @@ class StockQuoteItem(BaseModel):
     market: str = ""
     latest_price: float | None = None
     change_pct: float | None = None
+    turnover_rate: float | None = Field(default=None, description="换手率，单位：百分点")
+    amount: float | None = Field(default=None, description="成交额，单位：人民币元")
+    float_market_cap: float | None = Field(default=None, description="流通市值，单位：人民币元")
+    total_market_cap: float | None = Field(default=None, description="总市值，单位：人民币元")
     source: str = ""
+    updated_at: datetime
+
+
+class KlineBar(BaseModel):
+    """One 前复权 daily candle. ``volume`` is in 手 (100 shares), as A-share sources quote it."""
+
+    date: str = Field(description="交易日, YYYY-MM-DD")
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+
+
+class IntradayPoint(BaseModel):
+    """One minute of the 分时图. ``avg_price`` is the session VWAP up to this minute."""
+
+    time: str = Field(description="HH:MM, 交易所本地时间")
+    price: float
+    avg_price: float | None = None
+
+
+class IntradaySeries(BaseModel):
+    """A single trading day's 分时 curve, with the 昨收 baseline the chart draws against."""
+
+    symbol: str
+    date: str = Field(default="", description="交易日, YYYY-MM-DD")
+    prev_close: float | None = None
+    points: list[IntradayPoint] = Field(default_factory=list)
     updated_at: datetime
 
 
@@ -107,8 +144,15 @@ class WatchlistItem(BaseModel):
     updated_at: datetime
 
 
+class WatchlistItemWithQuote(WatchlistItem):
+    """A watchlist entry optionally enriched with the latest quote snapshot."""
+
+    quote: StockQuoteItem | None = None
+
+
 class WatchlistItemOrder(BaseModel):
     symbol: str = Field(min_length=1, max_length=32)
+    market: str = ""
     sort_order: int
 
 

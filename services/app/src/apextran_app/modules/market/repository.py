@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from asyncio import Lock
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 from ...shared.db import ensure_db_pool_open
@@ -18,13 +18,12 @@ from .domain.models import (
     WatchlistItemOrder,
     WatchlistUpdate,
 )
+from .market_ref import normalize_market
 
 if TYPE_CHECKING:
-    from psycopg import AsyncConnection
     from psycopg.rows import DictRow
     from psycopg_pool import AsyncConnectionPool
 else:
-    AsyncConnection = Any
     AsyncConnectionPool = Any
     DictRow = dict[str, Any]
 
@@ -55,7 +54,7 @@ class WatchlistRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def remove_watchlist_item(self, user_id: str, watchlist_id: UUID | None, symbol: str) -> bool:
+    async def remove_watchlist_item(self, user_id: str, watchlist_id: UUID | None, market: str, symbol: str) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -143,13 +142,14 @@ class InMemoryWatchlistRepository(WatchlistRepository):
             if resolved_id is None:
                 raise KeyError("watchlist not found")
             items = self._watchlist_items_by_user[user_id].setdefault(resolved_id, [])
+            normalized_market = normalize_market(item.market, item.symbol)
             for existing in items:
-                if existing.instrument.symbol == item.symbol and existing.instrument.market == item.market:
+                if existing.instrument.symbol == item.symbol and existing.instrument.market == normalized_market:
                     return existing
             now = datetime.now(UTC)
             watchlist_item = WatchlistItem(
                 id=uuid4(),
-                instrument=_stock_from_create(item),
+                instrument=_stock_from_create(item, normalized_market),
                 sort_order=item.sort_order,
                 note=item.note.strip(),
                 created_at=now,
@@ -158,13 +158,18 @@ class InMemoryWatchlistRepository(WatchlistRepository):
             items.insert(0, watchlist_item)
             return watchlist_item
 
-    async def remove_watchlist_item(self, user_id: str, watchlist_id: UUID | None, symbol: str) -> bool:
+    async def remove_watchlist_item(self, user_id: str, watchlist_id: UUID | None, market: str, symbol: str) -> bool:
         async with self._lock:
             resolved_id = self._resolve_watchlist_id(user_id, watchlist_id)
             if resolved_id is None:
                 return False
             items = self._watchlist_items_by_user[user_id].setdefault(resolved_id, [])
-            kept = [item for item in items if item.instrument.symbol != symbol]
+            normalized_market = normalize_market(market, symbol)
+            kept = [
+                item
+                for item in items
+                if item.instrument.symbol != symbol or item.instrument.market != normalized_market
+            ]
             self._watchlist_items_by_user[user_id][resolved_id] = kept
             return len(kept) != len(items)
 
@@ -179,9 +184,19 @@ class InMemoryWatchlistRepository(WatchlistRepository):
             if resolved_id is None:
                 return []
             items = self._watchlist_items_by_user[user_id].setdefault(resolved_id, [])
-            order_by_symbol = {entry.symbol: entry.sort_order for entry in order}
+            order_by_ref = {
+                (normalize_market(entry.market, entry.symbol), entry.symbol): entry.sort_order
+                for entry in order
+            }
             updated = [
-                item.model_copy(update={"sort_order": order_by_symbol.get(item.instrument.symbol, item.sort_order)})
+                item.model_copy(
+                    update={
+                        "sort_order": order_by_ref.get(
+                            (item.instrument.market, item.instrument.symbol),
+                            item.sort_order,
+                        )
+                    }
+                )
                 for item in items
             ]
             updated.sort(key=lambda item: (item.sort_order, item.created_at), reverse=False)
@@ -329,6 +344,7 @@ class PostgresWatchlistRepository(WatchlistRepository):
             resolved_id = await self._resolve_watchlist_id(conn, user_id, watchlist_id)
             if resolved_id is None:
                 raise KeyError("watchlist not found")
+            normalized_market = normalize_market(item.market, item.symbol)
             row = await _fetch_one(
                 conn,
                 """
@@ -370,7 +386,7 @@ class PostgresWatchlistRepository(WatchlistRepository):
                     resolved_id,
                     item.symbol.strip(),
                     item.name.strip(),
-                    item.market.strip(),
+                    normalized_market,
                     item.concept.strip(),
                     item.source.strip(),
                     item.updated_at,
@@ -380,21 +396,22 @@ class PostgresWatchlistRepository(WatchlistRepository):
             )
             return _watchlist_item_from_row(row)
 
-    async def remove_watchlist_item(self, user_id: str, watchlist_id: UUID | None, symbol: str) -> bool:
+    async def remove_watchlist_item(self, user_id: str, watchlist_id: UUID | None, market: str, symbol: str) -> bool:
         await self._open_pool()
         async with self._pool.connection() as conn, conn.transaction():
             await _set_rls_user(conn, user_id)
             resolved_id = await self._resolve_watchlist_id(conn, user_id, watchlist_id)
             if resolved_id is None:
                 return False
+            normalized_market = normalize_market(market, symbol)
             row = await _fetch_optional(
                 conn,
                 """
                     DELETE FROM market.watchlist_items
-                    WHERE user_id = %s AND watchlist_id = %s AND symbol = %s
+                    WHERE user_id = %s AND watchlist_id = %s AND market = %s AND symbol = %s
                     RETURNING id
                     """,
-                (user_id, resolved_id, symbol),
+                (user_id, resolved_id, normalized_market, symbol),
             )
             return row is not None
 
@@ -415,9 +432,15 @@ class PostgresWatchlistRepository(WatchlistRepository):
                     """
                         UPDATE market.watchlist_items
                         SET sort_order = %s, updated_at = now()
-                        WHERE user_id = %s AND watchlist_id = %s AND symbol = %s
+                        WHERE user_id = %s AND watchlist_id = %s AND market = %s AND symbol = %s
                         """,
-                    (entry.sort_order, user_id, resolved_id, entry.symbol),
+                    (
+                        entry.sort_order,
+                        user_id,
+                        resolved_id,
+                        normalize_market(entry.market, entry.symbol),
+                        entry.symbol,
+                    ),
                 )
             rows = await _fetch_all(
                 conn,
@@ -442,7 +465,7 @@ class PostgresWatchlistRepository(WatchlistRepository):
             )
             return [_watchlist_item_from_row(row) for row in rows]
 
-    async def _ensure_default_watchlist(self, conn: AsyncConnection[DictRow], user_id: str) -> UUID:
+    async def _ensure_default_watchlist(self, conn: Any, user_id: str) -> UUID:
         row = await _fetch_one(
             conn,
             """
@@ -454,11 +477,11 @@ class PostgresWatchlistRepository(WatchlistRepository):
             """,
             (user_id,),
         )
-        return row["id"]
+        return cast("UUID", row["id"])
 
     async def _resolve_watchlist_id(
         self,
-        conn: AsyncConnection[DictRow],
+        conn: Any,
         user_id: str,
         watchlist_id: UUID | None,
     ) -> UUID | None:
@@ -476,36 +499,36 @@ class PostgresWatchlistRepository(WatchlistRepository):
         return row["id"] if row is not None else None
 
 
-async def _set_rls_user(conn: AsyncConnection[DictRow], user_id: str) -> None:
+async def _set_rls_user(conn: Any, user_id: str) -> None:
     await conn.execute("SELECT set_config('app.user_id', %s, true)", (user_id,))
 
 
-async def _fetch_one(conn: AsyncConnection[DictRow], sql: str, params: tuple[object, ...]) -> DictRow:
+async def _fetch_one(conn: Any, sql: str, params: tuple[object, ...]) -> DictRow:
     async with conn.cursor() as cur:
         await cur.execute(sql, params)
         row = await cur.fetchone()
         if row is None:
             raise RuntimeError("query returned no rows")
-        return row
+        return cast("DictRow", row)
 
 
-async def _fetch_optional(conn: AsyncConnection[DictRow], sql: str, params: tuple[object, ...]) -> DictRow | None:
+async def _fetch_optional(conn: Any, sql: str, params: tuple[object, ...]) -> DictRow | None:
     async with conn.cursor() as cur:
         await cur.execute(sql, params)
-        return await cur.fetchone()
+        return cast("DictRow | None", await cur.fetchone())
 
 
-async def _fetch_all(conn: AsyncConnection[DictRow], sql: str, params: tuple[object, ...]) -> list[DictRow]:
+async def _fetch_all(conn: Any, sql: str, params: tuple[object, ...]) -> list[DictRow]:
     async with conn.cursor() as cur:
         await cur.execute(sql, params)
         return list(await cur.fetchall())
 
 
-def _stock_from_create(item: WatchlistItemCreate) -> StockSearchItem:
+def _stock_from_create(item: WatchlistItemCreate, market: str | None = None) -> StockSearchItem:
     return StockSearchItem(
         symbol=item.symbol.strip(),
         name=item.name.strip(),
-        market=item.market.strip(),
+        market=market if market is not None else normalize_market(item.market, item.symbol),
         latest_price=None,
         change_pct=None,
         concept=item.concept.strip(),

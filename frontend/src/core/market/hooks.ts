@@ -3,16 +3,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addDefaultWatchlistItem,
   loadAiHotspots,
+  loadDailyKline,
   loadDefaultWatchlistItems,
   loadFlash,
   loadHeadlines,
   loadHotlist,
+  loadIntraday,
   loadQuotes,
   loadNews,
   removeDefaultWatchlistItem,
   searchStocks,
 } from "./api";
-import type { StockSearchItem } from "./types";
+import type { StockSearchItem, WatchlistItemWithQuote } from "./types";
+import {
+  ON_ADD_REQUOTE_DELAY_MS,
+  WATCHLIST_ITEMS_QUERY_KEY,
+  withOptimisticWatchlistItem,
+} from "./watchlist-cache";
 
 // Poll on an interval: the server already collapses upstream fan-out (worker →
 // Redis → N readers), so a short client poll is cheap and keeps headlines fresh.
@@ -68,6 +75,65 @@ export function useStockSearch({
     error: queryResult.error,
     refetch: queryResult.refetch,
     dataUpdatedAt: queryResult.dataUpdatedAt,
+  };
+}
+
+// Charts are opened on demand from a dialog, so both hooks stay disabled — and
+// poll nothing — until that dialog mounts them with `enabled`.
+export function useDailyKline({
+  symbol,
+  market = "",
+  limit = 180,
+  enabled = true,
+}: {
+  symbol: string;
+  market?: string;
+  limit?: number;
+  enabled?: boolean;
+}) {
+  const trimmedMarket = market.trim();
+  const query = useQuery({
+    queryKey: ["market", "klines", trimmedMarket, symbol, limit],
+    queryFn: () => loadDailyKline(symbol, limit, trimmedMarket),
+    enabled: enabled && symbol.length > 0,
+    // Aligned with the worker's 10s snapshot cycle (and the intraday poll).
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
+    staleTime: 5_000,
+  });
+  return {
+    bars: query.data ?? [],
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    error: query.error,
+    refetch: query.refetch,
+  };
+}
+
+export function useIntraday({
+  symbol,
+  market = "",
+  enabled = true,
+}: {
+  symbol: string;
+  market?: string;
+  enabled?: boolean;
+}) {
+  const trimmedMarket = market.trim();
+  const query = useQuery({
+    queryKey: ["market", "intraday", trimmedMarket, symbol],
+    queryFn: () => loadIntraday(symbol, trimmedMarket),
+    enabled: enabled && symbol.length > 0,
+    refetchInterval: 10_000,
+    refetchOnWindowFocus: true,
+    staleTime: 5_000,
+  });
+  return {
+    series: query.data ?? null,
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    error: query.error,
+    refetch: query.refetch,
   };
 }
 
@@ -175,11 +241,18 @@ export function useAiHotspots({
   };
 }
 
-export function useDefaultWatchlistItems() {
+export function useDefaultWatchlistItems({
+  includeQuotes = false,
+  refetchInterval = includeQuotes ? 5_000 : false,
+}: {
+  includeQuotes?: boolean;
+  refetchInterval?: number | false;
+} = {}) {
   const query = useQuery({
-    queryKey: ["market", "watchlists", "default", "items"],
-    queryFn: loadDefaultWatchlistItems,
+    queryKey: ["market", "watchlists", "default", "items", { includeQuotes }],
+    queryFn: () => loadDefaultWatchlistItems({ includeQuotes }),
     refetchOnWindowFocus: true,
+    refetchInterval,
     staleTime: 5_000,
     retry: false,
   });
@@ -221,10 +294,35 @@ export function useAddDefaultWatchlistItem() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (stock: StockSearchItem) => addDefaultWatchlistItem(stock),
+    // Optimistic: the row appears instantly with the day-level stats the search
+    // result already carries; the server round-trips replace it afterwards.
+    onMutate: async (stock: StockSearchItem) => {
+      await queryClient.cancelQueries({ queryKey: WATCHLIST_ITEMS_QUERY_KEY });
+      const previous = queryClient.getQueriesData<WatchlistItemWithQuote[]>({
+        queryKey: WATCHLIST_ITEMS_QUERY_KEY,
+      });
+      queryClient.setQueriesData<WatchlistItemWithQuote[]>(
+        { queryKey: WATCHLIST_ITEMS_QUERY_KEY },
+        (items) => withOptimisticWatchlistItem(items, stock),
+      );
+      return { previous };
+    },
+    onError: (_error, _stock, context) => {
+      for (const [queryKey, data] of context?.previous ?? []) {
+        queryClient.setQueryData(queryKey, data);
+      }
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["market", "watchlists", "default", "items"],
+        queryKey: WATCHLIST_ITEMS_QUERY_KEY,
       });
+      // Second pass once the backend's on-add refresh has landed the realtime
+      // quote snapshot, upgrading the row from day-level to live numbers.
+      setTimeout(() => {
+        void queryClient.invalidateQueries({
+          queryKey: WATCHLIST_ITEMS_QUERY_KEY,
+        });
+      }, ON_ADD_REQUOTE_DELAY_MS);
     },
   });
 }
@@ -232,7 +330,8 @@ export function useAddDefaultWatchlistItem() {
 export function useRemoveDefaultWatchlistItem() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (symbol: string) => removeDefaultWatchlistItem(symbol),
+    mutationFn: (stock: Pick<StockSearchItem, "market" | "symbol">) =>
+      removeDefaultWatchlistItem(stock),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: ["market", "watchlists", "default", "items"],

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .domain.models import FlashItem, HotItem, NewsItem, StockSearchItem
+from .domain.models import FlashItem, HotItem, IntradaySeries, KlineBar, NewsItem, StockSearchItem
 
 
 class MarketSource(Protocol):
@@ -18,6 +18,10 @@ class MarketSource(Protocol):
     async def search_stocks(self, query: str, limit: int = 20) -> list[StockSearchItem]: ...
 
     async def list_stock_instruments(self) -> list[StockSearchItem]: ...
+
+    async def fetch_daily_kline(self, symbol: str, limit: int = 180) -> list[KlineBar]: ...
+
+    async def fetch_intraday(self, symbol: str) -> IntradaySeries: ...
 
     async def fetch_headlines(self, symbol: str | None = None) -> list[NewsItem]: ...
 

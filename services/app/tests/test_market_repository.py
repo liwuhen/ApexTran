@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 from apextran_app.modules.market.domain.models import (
     WatchlistCreate,
@@ -8,16 +9,17 @@ from apextran_app.modules.market.domain.models import (
     WatchlistItemOrder,
     WatchlistUpdate,
 )
+from apextran_app.modules.market.market_ref import MARKET_SH_A, MARKET_SZ_A
 from apextran_app.modules.market.repository import InMemoryWatchlistRepository, _set_rls_user
 
 
-def _item(symbol: str) -> WatchlistItemCreate:
+def _item(symbol: str, market: str = MARKET_SH_A) -> WatchlistItemCreate:
     return WatchlistItemCreate(
         symbol=symbol,
         name=f"stock-{symbol}",
-        market="A_SHARE",
+        market=market,
         source="test",
-        updated_at="2026-07-08T12:00:00Z",
+        updated_at=datetime(2026, 7, 8, 12, tzinfo=UTC),
     )
 
 
@@ -32,8 +34,22 @@ def test_in_memory_watchlist_repository_isolates_users_and_dedupes() -> None:
         assert first.instrument.change_pct is None
         assert await repo.list_watchlist_items("user-b", None) == []
 
-        await repo.remove_watchlist_item("user-a", None, "600519")
+        await repo.remove_watchlist_item("user-a", None, MARKET_SH_A, "600519")
         assert await repo.list_watchlist_items("user-a", None) == []
+
+    asyncio.run(run())
+
+
+def test_in_memory_watchlist_repository_removes_by_market_and_symbol() -> None:
+    async def run() -> None:
+        repo = InMemoryWatchlistRepository()
+        await repo.add_watchlist_item("user-a", None, _item("000001", MARKET_SH_A))
+        await repo.add_watchlist_item("user-a", None, _item("000001", MARKET_SZ_A))
+
+        assert await repo.remove_watchlist_item("user-a", None, MARKET_SZ_A, "000001") is True
+
+        remaining = await repo.list_watchlist_items("user-a", None)
+        assert [(item.instrument.market, item.instrument.symbol) for item in remaining] == [(MARKET_SH_A, "000001")]
 
     asyncio.run(run())
 
@@ -52,7 +68,10 @@ def test_in_memory_watchlist_repository_supports_groups_and_ordering() -> None:
         ordered = await repo.reorder_watchlist_items(
             "user-a",
             watchlist.id,
-            [WatchlistItemOrder(symbol="300750", sort_order=0), WatchlistItemOrder(symbol="600519", sort_order=1)],
+            [
+                WatchlistItemOrder(market=MARKET_SH_A, symbol="300750", sort_order=0),
+                WatchlistItemOrder(market=MARKET_SH_A, symbol="600519", sort_order=1),
+            ],
         )
         assert [item.instrument.symbol for item in ordered] == ["300750", "600519"]
 
@@ -72,7 +91,7 @@ def test_set_rls_user_uses_transaction_local_setting() -> None:
 
     async def run() -> None:
         conn = FakeConn()
-        await _set_rls_user(conn, "user-a")  # type: ignore[arg-type]
+        await _set_rls_user(conn, "user-a")
         assert conn.calls == [("SELECT set_config('app.user_id', %s, true)", ("user-a",))]
 
     asyncio.run(run())

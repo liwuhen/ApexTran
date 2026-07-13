@@ -7,13 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 from ...shared.db import ensure_db_pool_open
 from .domain.models import StockSearchItem
+from .market_ref import normalize_market
 
 if TYPE_CHECKING:
-    from psycopg import AsyncConnection
     from psycopg.rows import DictRow
     from psycopg_pool import AsyncConnectionPool
 else:
-    AsyncConnection = Any
     AsyncConnectionPool = Any
     DictRow = dict[str, Any]
 
@@ -56,33 +55,51 @@ class PostgresStockInstrumentRepository(StockInstrumentRepository):
                 conn,
                 """
                 SELECT
-                  symbol,
-                  market,
-                  name,
-                  NULL::double precision AS latest_price,
-                  NULL::double precision AS change_pct,
-                  concept,
-                  source,
-                  updated_at
-                FROM market.stock_instruments
-                WHERE status = 'active'
+                  stock.symbol,
+                  stock.market,
+                  stock.name,
+                  quote.latest_price,
+                  quote.change_pct,
+                  quote.turnover_rate,
+                  quote.amount,
+                  quote.float_market_cap,
+                  quote.total_market_cap,
+                  stock.concept,
+                  stock.source,
+                  GREATEST(stock.updated_at, COALESCE(quote.updated_at, stock.updated_at)) AS updated_at
+                FROM market.stock_instruments AS stock
+                LEFT JOIN LATERAL (
+                  SELECT
+                    latest_price,
+                    change_pct,
+                    turnover_rate,
+                    amount,
+                    float_market_cap,
+                    total_market_cap,
+                    updated_at
+                  FROM market.stock_quote_snapshots AS quote
+                  WHERE quote.symbol = stock.symbol
+                    AND quote.market = stock.market
+                  LIMIT 1
+                ) AS quote ON true
+                WHERE stock.status = 'active'
                   AND (
-                    symbol ILIKE %s
-                    OR name ILIKE %s
-                    OR pinyin ILIKE %s
-                    OR pinyin_abbr ILIKE %s
-                    OR similarity(name, %s) > 0.3
+                    stock.symbol ILIKE %s
+                    OR stock.name ILIKE %s
+                    OR stock.pinyin ILIKE %s
+                    OR stock.pinyin_abbr ILIKE %s
+                    OR similarity(stock.name, %s) > 0.3
                   )
                 ORDER BY
                   CASE
-                    WHEN symbol = %s THEN 0
-                    WHEN symbol ILIKE %s THEN 1
-                    WHEN name = %s THEN 2
-                    WHEN name ILIKE %s THEN 3
-                    WHEN pinyin_abbr ILIKE %s THEN 4
+                    WHEN stock.symbol = %s THEN 0
+                    WHEN stock.symbol ILIKE %s THEN 1
+                    WHEN stock.name = %s THEN 2
+                    WHEN stock.name ILIKE %s THEN 3
+                    WHEN stock.pinyin_abbr ILIKE %s THEN 4
                     ELSE 5
                   END,
-                  symbol
+                  stock.symbol
                 LIMIT %s
                 """,
                 (prefix, contains, contains, prefix, query, query, prefix, query, prefix, prefix, limit),
@@ -118,7 +135,7 @@ class PostgresStockInstrumentRepository(StockInstrumentRepository):
                 name = item.name.strip() or symbol
                 if not symbol or not name:
                     continue
-                market = item.market.strip()
+                market = normalize_market(item.market, symbol)
                 markets.add(market)
                 await _upsert_stock(cur, item)
                 await cur.execute(
@@ -151,7 +168,7 @@ class PostgresStockInstrumentRepository(StockInstrumentRepository):
             return synced
 
 
-async def _fetch_all(conn: AsyncConnection[DictRow], sql: str, params: tuple[object, ...]) -> list[DictRow]:
+async def _fetch_all(conn: Any, sql: str, params: tuple[object, ...]) -> list[DictRow]:
     async with conn.cursor() as cur:
         await cur.execute(sql, params)
         return list(await cur.fetchall())
@@ -162,6 +179,7 @@ async def _upsert_stock(cur: Any, item: StockSearchItem) -> None:
     name = item.name.strip() or symbol
     if not symbol or not name:
         return
+    market = normalize_market(item.market, symbol)
     await cur.execute(
         """
         INSERT INTO market.stock_instruments (
@@ -187,7 +205,7 @@ async def _upsert_stock(cur: Any, item: StockSearchItem) -> None:
         """,
         (
             symbol,
-            item.market.strip(),
+            market,
             _exchange_for_symbol(symbol),
             name,
             item.concept.strip(),
@@ -204,6 +222,10 @@ def _stock_from_row(row: DictRow) -> StockSearchItem:
         market=row["market"],
         latest_price=row["latest_price"],
         change_pct=row["change_pct"],
+        turnover_rate=row["turnover_rate"],
+        amount=row["amount"],
+        float_market_cap=row["float_market_cap"],
+        total_market_cap=row["total_market_cap"],
         concept=row["concept"],
         source=row["source"],
         updated_at=row["updated_at"],

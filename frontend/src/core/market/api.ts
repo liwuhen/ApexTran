@@ -3,11 +3,45 @@ import { getBackendBaseURL } from "../config";
 import type {
   FlashItem,
   HotItem,
+  IntradaySeries,
+  KlineBar,
   NewsItem,
   StockQuoteItem,
   StockSearchItem,
   WatchlistItem,
+  WatchlistItemWithQuote,
 } from "./types";
+
+type MarketStatFields = Pick<
+  StockQuoteItem,
+  "turnover_rate" | "amount" | "float_market_cap" | "total_market_cap"
+>;
+type MarketStatKey = keyof MarketStatFields;
+type MarketStatWireFields = Partial<Record<MarketStatKey, unknown>>;
+type MarketItemWire<T> = Omit<T, MarketStatKey> & MarketStatWireFields;
+
+function finiteNumberOrNull(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function normalizeMarketStatFields<T extends object>(
+  item: T & MarketStatWireFields,
+): Omit<T, MarketStatKey> & MarketStatFields {
+  return {
+    ...item,
+    turnover_rate: finiteNumberOrNull(item.turnover_rate),
+    amount: finiteNumberOrNull(item.amount),
+    float_market_cap: finiteNumberOrNull(item.float_market_cap),
+    total_market_cap: finiteNumberOrNull(item.total_market_cap),
+  };
+}
 
 // Public, cacheable endpoint. Same-origin in the nginx stack; proxied to
 // apextran-app (:8100) via the /api/v1/* rewrite in `next dev`.
@@ -33,7 +67,8 @@ export async function searchStocks(
   if (!res.ok) {
     throw new Error(`Failed to search stocks: ${res.status}`);
   }
-  return (await res.json()) as StockSearchItem[];
+  const items = (await res.json()) as MarketItemWire<StockSearchItem>[];
+  return items.map(normalizeMarketStatFields);
 }
 
 export async function loadQuotes(symbols: string[]): Promise<StockQuoteItem[]> {
@@ -50,7 +85,47 @@ export async function loadQuotes(symbols: string[]): Promise<StockQuoteItem[]> {
   if (!res.ok) {
     throw new Error(`Failed to load quotes: ${res.status}`);
   }
-  return (await res.json()) as StockQuoteItem[];
+  const items = (await res.json()) as MarketItemWire<StockQuoteItem>[];
+  return items.map(normalizeMarketStatFields);
+}
+
+export async function loadDailyKline(
+  symbol: string,
+  limit = 180,
+  market = "",
+): Promise<KlineBar[]> {
+  const base = getBackendBaseURL();
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (market.trim()) {
+    params.set("market", market.trim());
+  }
+  const res = await fetch(
+    `${base}/api/v1/market/klines/${encodeURIComponent(symbol)}?${params}`,
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to load daily kline: ${res.status}`);
+  }
+  return (await res.json()) as KlineBar[];
+}
+
+export async function loadIntraday(
+  symbol: string,
+  market = "",
+): Promise<IntradaySeries> {
+  const base = getBackendBaseURL();
+  const params = new URLSearchParams();
+  if (market.trim()) {
+    params.set("market", market.trim());
+  }
+  const query = params.size > 0 ? `?${params}` : "";
+  const res = await fetch(
+    `${base}/api/v1/market/intraday/${encodeURIComponent(symbol)}${query}`,
+    { cache: "no-store" },
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to load intraday series: ${res.status}`);
+  }
+  return (await res.json()) as IntradaySeries;
 }
 
 export async function loadHeadlines(symbol?: string): Promise<NewsItem[]> {
@@ -91,14 +166,36 @@ export async function loadFlash(): Promise<FlashItem[]> {
   return (await res.json()) as FlashItem[];
 }
 
-export async function loadDefaultWatchlistItems(): Promise<WatchlistItem[]> {
-  const res = await fetch("/api/market/watchlists/default/items", {
+type DefaultWatchlistItemsOptions = {
+  includeQuotes?: boolean;
+};
+
+function normalizeWatchlistItem(
+  item: WatchlistItemWithQuote,
+): WatchlistItemWithQuote {
+  return {
+    ...item,
+    instrument: normalizeMarketStatFields(item.instrument),
+    quote: item.quote ? normalizeMarketStatFields(item.quote) : null,
+  };
+}
+
+export async function loadDefaultWatchlistItems({
+  includeQuotes = false,
+}: DefaultWatchlistItemsOptions = {}): Promise<WatchlistItemWithQuote[]> {
+  const params = new URLSearchParams();
+  if (includeQuotes) {
+    params.set("include_quotes", "true");
+  }
+  const query = params.size > 0 ? `?${params}` : "";
+  const res = await fetch(`/api/market/watchlists/default/items${query}`, {
     cache: "no-store",
   });
   if (!res.ok) {
     throw new Error(`Failed to load watchlist: ${res.status}`);
   }
-  return (await res.json()) as WatchlistItem[];
+  const items = (await res.json()) as WatchlistItemWithQuote[];
+  return items.map(normalizeWatchlistItem);
 }
 
 export async function addDefaultWatchlistItem(
@@ -123,9 +220,14 @@ export async function addDefaultWatchlistItem(
   return (await res.json()) as WatchlistItem;
 }
 
-export async function removeDefaultWatchlistItem(symbol: string): Promise<void> {
+export async function removeDefaultWatchlistItem(
+  stock: Pick<StockSearchItem, "market" | "symbol">,
+): Promise<void> {
+  const params = new URLSearchParams({
+    market: stock.market,
+  });
   const res = await fetch(
-    `/api/market/watchlists/default/items/${encodeURIComponent(symbol)}`,
+    `/api/market/watchlists/default/items/${encodeURIComponent(stock.symbol)}?${params}`,
     {
       method: "DELETE",
       cache: "no-store",

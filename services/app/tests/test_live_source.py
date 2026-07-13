@@ -70,3 +70,19 @@ async def test_fetch_hotlist_wires_sources(monkeypatch: pytest.MonkeyPatch) -> N
     assert items[0].concept == "存储芯片"
     assert items[0].rank == 1
 
+
+@pytest.mark.asyncio
+async def test_fetch_hotlist_rejects_partial_ranking_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = LiveMarketSource()
+
+    async def failed_ths(_client: object) -> None:
+        return None
+
+    async def healthy_em(_client: object) -> dict[str, dict[str, object]]:
+        return {"301308": {"em_rank": 1}}
+
+    monkeypatch.setattr(source, "_ths_hot", failed_ths)
+    monkeypatch.setattr(source, "_em_hot", healthy_em)
+
+    with pytest.raises(RuntimeError, match="incomplete snapshot"):
+        await source.fetch_hotlist()

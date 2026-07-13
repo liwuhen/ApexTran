@@ -22,7 +22,17 @@ def register_jobs(scheduler: Scheduler) -> None:
             _sync_stock_pool,
             interval=settings.stock_pool_refresh_interval,
         )
+    if settings.snapshot_refresh_interval > 0:
+        scheduler.add_job(
+            "market.refresh_snapshots",
+            _refresh_snapshots,
+            interval=settings.snapshot_refresh_interval,
+        )
 
 
 async def _sync_stock_pool() -> None:
     await get_service().sync_stock_pool()
+
+
+async def _refresh_snapshots() -> None:
+    await get_service().refresh_market_snapshots()

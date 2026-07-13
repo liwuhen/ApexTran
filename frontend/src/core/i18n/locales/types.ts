@@ -229,6 +229,17 @@ export interface Translations {
     startStockSearch: string;
     latestPrice: string;
     price: string;
+    currentPrice: string;
+    currentChangePct: string;
+    closePrice: string;
+    closeChangePct: string;
+    viewChart: string;
+    chartDialogHint: string;
+    dailyKline: string;
+    intradayChart: string;
+    prevClose: string;
+    avgPrice: string;
+    noChartData: string;
     turnoverRate: string;
     amount: string;
     floatMarketCap: string;

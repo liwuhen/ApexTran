@@ -11,6 +11,10 @@ import uvicorn
 from .config import get_settings
 
 app = typer.Typer(help="ApexTran business microservice.", no_args_is_help=True)
+_OPTIONAL_SNAPSHOT_SYMBOLS = typer.Argument(
+    None,
+    help="Optional stock symbols or MARKET:SYMBOL refs. Without args, refresh queued candidates.",
+)
 
 
 @app.command()
@@ -55,6 +59,28 @@ def sync_stock_pool() -> None:
     settings = get_settings()
     if not settings.db_url.strip():
         raise typer.BadParameter("APP_DB_URL is required to sync the stock pool")
+    asyncio.run(_run())
+
+
+@app.command()
+def refresh_market_snapshots(
+    symbols: list[str] | None = _OPTIONAL_SNAPSHOT_SYMBOLS,
+) -> None:
+    """Refresh quote, daily kline, and intraday snapshots."""
+
+    from .modules.market.provider import get_service
+    from .shared.db import close_db_pool
+
+    async def _run() -> None:
+        try:
+            count = await get_service().refresh_market_snapshots(symbols)
+            typer.echo(f"refreshed {count} market snapshot(s)")
+        finally:
+            await close_db_pool()
+
+    settings = get_settings()
+    if not settings.db_url.strip():
+        typer.echo("APP_DB_URL is empty; refreshed snapshots are process-local only", err=True)
     asyncio.run(_run())
 
 

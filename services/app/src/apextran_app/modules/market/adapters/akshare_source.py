@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 from loguru import logger
 
 from ..domain.models import FlashItem, FlashLevel, HotItem, NewsItem, StockSearchItem
+from ..market_ref import market_for_symbol
 
 _NEWS_ITEMS_PER_SOURCE = 10
 _CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -354,12 +355,16 @@ _FLASH_ITEMS_PER_SOURCE = 40
 _STOCK_SEARCH_POOL_TTL_SECONDS = 300
 _STOCK_SEARCH_MAX_LIMIT = 50
 _TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
+_TENCENT_WAN_TO_YUAN = 10_000
+_TENCENT_YI_TO_YUAN = 100_000_000
 _WEB_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
     ),
     "Referer": _CLS_TELEGRAPH_URL,
 }
+
+
 class AkshareMarketSource:
     """Maps akshare payloads onto the normalized domain models."""
 
@@ -1275,21 +1280,25 @@ def _build_stock_search_results(rows: list[dict[str, Any]], query: str, limit: i
         if rank is None:
             continue
         seen.add(symbol)
-        ranked.append(
-            (
-                rank,
-                StockSearchItem(
-                    symbol=symbol,
-                    name=name,
-                    market=_market_for_symbol(symbol),
-                    latest_price=_finite_optional_float(_col(row, "最新价", "现价", "price", default=None)),
-                    change_pct=_finite_optional_float(_col(row, "涨跌幅", "change_pct", default=None)),
-                    concept=str(_col(row, "所属行业", "行业", "concept", default="")).strip(),
-                    source="东方财富",
-                    updated_at=now,
+        ranked.append((
+            rank,
+            StockSearchItem(
+                symbol=symbol,
+                name=name,
+                market=_market_for_symbol(symbol),
+                latest_price=_finite_optional_float(_col(row, "最新价", "现价", "price", default=None)),
+                change_pct=_finite_optional_float(_col(row, "涨跌幅", "change_pct", default=None)),
+                turnover_rate=_finite_optional_float(_col(row, "换手率", "turnover_rate", default=None)),
+                amount=_finite_optional_float(_col(row, "成交额", "amount", default=None)),
+                float_market_cap=_finite_optional_float(
+                    _col(row, "流通市值", "流通值", "float_market_cap", default=None)
                 ),
-            )
-        )
+                total_market_cap=_finite_optional_float(_col(row, "总市值", "total_market_cap", default=None)),
+                concept=str(_col(row, "所属行业", "行业", "concept", default="")).strip(),
+                source="东方财富",
+                updated_at=now,
+            ),
+        ))
 
     ranked.sort(key=lambda pair: (pair[0], pair[1].symbol))
     return [item for _rank, item in ranked[:limit]]
@@ -1330,17 +1339,48 @@ def _stock_search_item_from_tencent_quote(symbol: str, text: str) -> StockSearch
         parts = line.split("~")
         if len(parts) < 33 or parts[2] != symbol or not parts[1]:
             continue
+        turnover_rate, amount, float_market_cap, total_market_cap = _tencent_quote_metrics(parts)
         return StockSearchItem(
             symbol=symbol,
             name=parts[1],
             market=_market_for_symbol(symbol),
             latest_price=_finite_optional_float(parts[3]),
             change_pct=_finite_optional_float(parts[32]),
+            turnover_rate=turnover_rate,
+            amount=amount,
+            float_market_cap=float_market_cap,
+            total_market_cap=total_market_cap,
             concept="",
             source="腾讯行情",
             updated_at=_now(),
         )
     return None
+
+
+def _tencent_quote_metrics(parts: list[str]) -> tuple[float | None, float | None, float | None, float | None]:
+    """Parse 腾讯 quote metrics into percentage points and人民币元."""
+    amount = None
+    if len(parts) > 35:
+        price_volume_amount = parts[35].split("/")
+        if len(price_volume_amount) >= 3:
+            amount = _finite_optional_float(price_volume_amount[2])
+    if amount is None:
+        amount = _scaled_tencent_metric(parts, 37, _TENCENT_WAN_TO_YUAN)
+    return (
+        _tencent_metric(parts, 38),
+        amount,
+        _scaled_tencent_metric(parts, 44, _TENCENT_YI_TO_YUAN),
+        _scaled_tencent_metric(parts, 45, _TENCENT_YI_TO_YUAN),
+    )
+
+
+def _tencent_metric(parts: list[str], index: int) -> float | None:
+    return _finite_optional_float(parts[index]) if len(parts) > index else None
+
+
+def _scaled_tencent_metric(parts: list[str], index: int, multiplier: int) -> float | None:
+    value = _tencent_metric(parts, index)
+    return round(value * multiplier, 2) if value is not None else None
 
 
 def _stock_search_rank(symbol: str, name: str, query: str) -> int | None:
@@ -1379,13 +1419,7 @@ def _stock_matches_query(symbol: str, name: str, query: str) -> bool:
 
 
 def _market_for_symbol(symbol: str) -> str:
-    if symbol.startswith("6"):
-        return "沪市A股"
-    if symbol.startswith(("0", "3")):
-        return "深市A股"
-    if symbol.startswith(("4", "8", "92")):
-        return "北交所"
-    return "A股"
+    return market_for_symbol(symbol)
 
 
 def _finite_optional_float(value: Any) -> float | None:

@@ -20,6 +20,11 @@ from ...shared.realtime import build_publisher
 from .ports import MarketSource
 from .repository import InMemoryWatchlistRepository, PostgresWatchlistRepository, WatchlistRepository
 from .service import MarketService
+from .snapshot_repository import (
+    InMemoryMarketSnapshotRepository,
+    MarketSnapshotRepository,
+    PostgresMarketSnapshotRepository,
+)
 from .stock_repository import (
     NoopStockInstrumentRepository,
     PostgresStockInstrumentRepository,
@@ -71,6 +76,16 @@ def _build_stock_repository(settings: Settings) -> StockInstrumentRepository:
     return NoopStockInstrumentRepository()
 
 
+def _build_snapshot_repository(settings: Settings) -> MarketSnapshotRepository:
+    if settings.db_url.strip():
+        pool = get_db_pool()
+        if pool is None:
+            raise RuntimeError("APP_DB_URL is configured but DB pool is unavailable")
+        logger.info("market: using PostgresMarketSnapshotRepository")
+        return PostgresMarketSnapshotRepository(pool)
+    return InMemoryMarketSnapshotRepository()
+
+
 @lru_cache
 def get_service() -> MarketService:
     settings = get_settings()
@@ -84,4 +99,10 @@ def get_service() -> MarketService:
         publisher=build_publisher(),
         watchlist_repository=_build_watchlist_repository(settings),
         stock_repository=_build_stock_repository(settings),
+        snapshot_repository=_build_snapshot_repository(settings),
+        request_source_fallback=not settings.db_url.strip() and settings.market_source == "mock",
+        snapshot_symbol_limit=settings.snapshot_symbol_limit,
+        refresh_on_add=settings.watchlist_refresh_on_add,
+        chart_fill_on_read=settings.chart_fill_on_read,
+        chart_fill_timeout=settings.chart_fill_timeout,
     )

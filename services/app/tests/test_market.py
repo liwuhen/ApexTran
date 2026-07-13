@@ -143,12 +143,82 @@ def test_openapi_exposes_market_contract() -> None:
     assert "/api/v1/market/stocks/search" in spec["paths"]
     assert "/api/v1/market/quotes" in spec["paths"]
     assert "/api/v1/market/ai-hotspots" in spec["paths"]
+    assert "/api/v1/market/klines/{symbol}" in spec["paths"]
+    assert "/api/v1/market/intraday/{symbol}" in spec["paths"]
     assert "/api/v1/market/watchlists" in spec["paths"]
     assert "/api/v1/market/watchlists/default/items" in spec["paths"]
 
 
+def test_daily_klines_endpoint_returns_ordered_candles() -> None:
+    resp = client.get("/api/v1/market/klines/600519", params={"limit": 30})
+    assert resp.status_code == 200
+    bars = resp.json()
+    assert len(bars) == 30
+    assert {"date", "open", "high", "low", "close", "volume"} <= bars[0].keys()
+    assert [bar["date"] for bar in bars] == sorted(bar["date"] for bar in bars)  # oldest-first
+    assert all(bar["low"] <= min(bar["open"], bar["close"]) for bar in bars)
+    assert all(bar["high"] >= max(bar["open"], bar["close"]) for bar in bars)
+    assert "s-maxage" in resp.headers.get("cache-control", "")
+
+
+def test_intraday_endpoint_returns_one_full_session() -> None:
+    resp = client.get("/api/v1/market/intraday/600519")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["symbol"] == "600519"
+    assert body["prev_close"] is not None
+    # 09:30–11:30 plus 13:00–15:00, both endpoints inclusive.
+    assert len(body["points"]) == 242
+    assert body["points"][0]["time"] == "09:30"
+    assert body["points"][-1]["time"] == "15:00"
+    assert "s-maxage" in resp.headers.get("cache-control", "")
+
+
+def test_chart_endpoints_reject_non_a_share_symbols() -> None:
+    assert client.get("/api/v1/market/klines/AAPL").status_code == 422
+    assert client.get("/api/v1/market/intraday/60051").status_code == 422
+
+
+def test_tencent_kline_row_maps_open_close_high_low_in_source_order() -> None:
+    """腾讯 orders a day row [date, open, close, high, low, volume] — not OHLC."""
+    from apextran_app.modules.market.adapters.live_source import _kline_bar
+
+    bar = _kline_bar(["2026-07-07", "1200.000", "1188.800", "1202.000", "1188.110", "27365.000"])
+
+    assert bar is not None
+    assert (bar.open, bar.close, bar.high, bar.low) == (1200.0, 1188.8, 1202.0, 1188.11)
+    assert bar.volume == 27365.0
+    assert _kline_bar(["2026-07-07", "1200.000"]) is None
+    assert _kline_bar(["2026-07-07", "", "1188.800", "1202.000", "1188.110", "1"]) is None
+
+
+def test_tencent_intraday_drops_after_hours_ticks_and_derives_vwap() -> None:
+    """深交所 盘后定价 runs to 15:30; those ticks must not enter the 分时 curve."""
+    from apextran_app.modules.market.adapters.live_source import _intraday_points
+
+    points = _intraday_points([
+        "0930 10.50 5697 5981850.00",
+        "0931 10.40 0 0.00",
+        "1500 10.45 957946 1000372053.82",
+        "1530 10.45 957958 1000384593.82",
+    ])
+
+    assert [point.time for point in points] == ["09:30", "09:31", "15:00"]
+    # 5981850 / (5697 手 × 100 shares) = 10.5000...
+    assert points[0].avg_price == 10.5
+    assert points[1].avg_price is None  # no turnover yet → no VWAP
+    assert points[2].avg_price == 10.443
+
+
+def test_tencent_intraday_date_is_normalized_to_iso() -> None:
+    from apextran_app.modules.market.adapters.live_source import _iso_date
+
+    assert _iso_date("20260710") == "2026-07-10"
+    assert _iso_date("") == ""
+
+
 def test_quotes_endpoint_returns_short_lived_public_quotes() -> None:
-    resp = client.get("/api/v1/market/quotes", params={"symbols": "A_SHARE:600519,A_SHARE:300750"})
+    resp = client.get("/api/v1/market/quotes", params={"symbols": "沪市A股:600519,深市A股:300750"})
     assert resp.status_code == 200
     body = resp.json()
     assert [item["symbol"] for item in body] == ["600519", "300750"]
@@ -187,7 +257,7 @@ def test_private_watchlist_write_requires_scope() -> None:
         json={
             "symbol": "600519",
             "name": "贵州茅台",
-            "market": "A_SHARE",
+            "market": "沪市A股",
             "updated_at": "2026-07-08T12:00:00Z",
         },
     )
@@ -201,7 +271,7 @@ def test_private_watchlist_isolated_by_jwt_subject() -> None:
         json={
             "symbol": "600519",
             "name": "贵州茅台",
-            "market": "A_SHARE",
+            "market": "沪市A股",
             "latest_price": 1199.3,
             "change_pct": 0.88,
             "concept": "白酒",
@@ -219,11 +289,43 @@ def test_private_watchlist_isolated_by_jwt_subject() -> None:
     assert user_b_resp.json() == []
 
     delete_resp = client.delete(
-        "/api/v1/market/watchlists/default/items/600519",
+        "/api/v1/market/watchlists/default/items/600519?market=沪市A股",
         headers=_auth_headers("market-user-a"),
     )
     assert delete_resp.status_code == 204
     assert client.get("/api/v1/market/watchlists/default/items", headers=_auth_headers("market-user-a")).json() == []
+
+
+def test_default_watchlist_items_optionally_include_quotes() -> None:
+    create_resp = client.post(
+        "/api/v1/market/watchlists/default/items",
+        headers=_auth_headers("market-quote-user"),
+        json={
+            "symbol": "600519",
+            "name": "贵州茅台",
+            "market": "沪市A股",
+            "updated_at": "2026-07-08T12:00:00Z",
+        },
+    )
+    assert create_resp.status_code == 201
+
+    plain_resp = client.get(
+        "/api/v1/market/watchlists/default/items",
+        headers=_auth_headers("market-quote-user"),
+    )
+    assert plain_resp.status_code == 200
+    assert "quote" not in plain_resp.json()[0]
+
+    quoted_resp = client.get(
+        "/api/v1/market/watchlists/default/items",
+        params={"include_quotes": "true"},
+        headers=_auth_headers("market-quote-user"),
+    )
+    assert quoted_resp.status_code == 200
+    body = quoted_resp.json()
+    assert body[0]["instrument"]["symbol"] == "600519"
+    assert body[0]["quote"]["symbol"] == "600519"
+    assert body[0]["quote"]["market"] == "沪市A股"
 
 
 def test_private_watchlist_crud_and_ordering() -> None:
@@ -250,7 +352,7 @@ def test_private_watchlist_crud_and_ordering() -> None:
             json={
                 "symbol": symbol,
                 "name": f"stock-{symbol}",
-                "market": "A_SHARE",
+                "market": "沪市A股" if symbol.startswith("6") else "深市A股",
                 "latest_price": 1199.3,
                 "change_pct": 0.88,
                 "source": "test",
@@ -264,7 +366,12 @@ def test_private_watchlist_crud_and_ordering() -> None:
     order_resp = client.patch(
         f"/api/v1/market/watchlists/{watchlist_id}/items/order",
         headers=_auth_headers("market-crud-user"),
-        json={"items": [{"symbol": "300750", "sort_order": 0}, {"symbol": "600519", "sort_order": 1}]},
+        json={
+            "items": [
+                {"market": "深市A股", "symbol": "300750", "sort_order": 0},
+                {"market": "沪市A股", "symbol": "600519", "sort_order": 1},
+            ]
+        },
     )
     assert order_resp.status_code == 200
     assert [item["instrument"]["symbol"] for item in order_resp.json()] == ["300750", "600519"]
