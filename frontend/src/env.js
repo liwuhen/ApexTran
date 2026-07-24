@@ -13,6 +13,17 @@ export const env = createEnv({
         : z.string().optional(),
     BETTER_AUTH_GITHUB_CLIENT_ID: z.string().optional(),
     BETTER_AUTH_GITHUB_CLIENT_SECRET: z.string().optional(),
+    BETTER_AUTH_URL: z.string().optional(),
+    BETTER_AUTH_BASE_URL: z.string().optional(),
+    BETTER_AUTH_TRUSTED_ORIGINS: z.string().optional(),
+    BETTER_AUTH_DATABASE_URL: z.string().optional(),
+    AUTH_DATABASE_URL: z.string().optional(),
+    AUTH_DB_PATH: z.string().optional(),
+    APEXTRAN_INTERNAL_JWT_SECRET: z.string().optional(),
+    APEXTRAN_INTERNAL_JWT_ISSUER: z.string().optional(),
+    APEXTRAN_INTERNAL_JWT_AUDIENCE: z.string().optional(),
+    APEXTRAN_INTERNAL_JWT_KEY_ID: z.string().optional(),
+    DEER_FLOW_INTERNAL_APP_BASE_URL: z.string().optional(),
     GITHUB_OAUTH_TOKEN: z.string().optional(),
     NODE_ENV: z
       .enum(["development", "test", "production"])
@@ -39,6 +50,18 @@ export const env = createEnv({
     BETTER_AUTH_GITHUB_CLIENT_ID: process.env.BETTER_AUTH_GITHUB_CLIENT_ID,
     BETTER_AUTH_GITHUB_CLIENT_SECRET:
       process.env.BETTER_AUTH_GITHUB_CLIENT_SECRET,
+    BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
+    BETTER_AUTH_BASE_URL: process.env.BETTER_AUTH_BASE_URL,
+    BETTER_AUTH_TRUSTED_ORIGINS: process.env.BETTER_AUTH_TRUSTED_ORIGINS,
+    BETTER_AUTH_DATABASE_URL: process.env.BETTER_AUTH_DATABASE_URL,
+    AUTH_DATABASE_URL: process.env.AUTH_DATABASE_URL,
+    AUTH_DB_PATH: process.env.AUTH_DB_PATH,
+    APEXTRAN_INTERNAL_JWT_SECRET: process.env.APEXTRAN_INTERNAL_JWT_SECRET,
+    APEXTRAN_INTERNAL_JWT_ISSUER: process.env.APEXTRAN_INTERNAL_JWT_ISSUER,
+    APEXTRAN_INTERNAL_JWT_AUDIENCE: process.env.APEXTRAN_INTERNAL_JWT_AUDIENCE,
+    APEXTRAN_INTERNAL_JWT_KEY_ID: process.env.APEXTRAN_INTERNAL_JWT_KEY_ID,
+    DEER_FLOW_INTERNAL_APP_BASE_URL:
+      process.env.DEER_FLOW_INTERNAL_APP_BASE_URL,
     NODE_ENV: process.env.NODE_ENV,
 
     NEXT_PUBLIC_BACKEND_BASE_URL: process.env.NEXT_PUBLIC_BACKEND_BASE_URL,

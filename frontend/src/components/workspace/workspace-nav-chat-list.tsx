@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  BarChart3Icon,
   CandlestickChartIcon,
   CalendarClockIcon,
   ChevronRightIcon,
@@ -40,14 +41,23 @@ export function WorkspaceNavChatList() {
   const isMarketHotspotsPath = pathname.startsWith(
     "/workspace/market-hotspots",
   );
-  const [marketHotspotsOpen, setMarketHotspotsOpen] =
-    useState(isMarketHotspotsPath);
+  const isMarketAnalysisPath = pathname.startsWith(
+    "/workspace/market-analysis",
+  );
+  const [marketHotspotsOpen, setMarketHotspotsOpen] = useState(false);
+  const [marketAnalysisOpen, setMarketAnalysisOpen] = useState(false);
 
   useEffect(() => {
     if (isMarketHotspotsPath) {
       setMarketHotspotsOpen(true);
     }
   }, [isMarketHotspotsPath]);
+
+  useEffect(() => {
+    if (isMarketAnalysisPath) {
+      setMarketAnalysisOpen(true);
+    }
+  }, [isMarketAnalysisPath]);
 
   return (
     <SidebarGroup className="pt-1">
@@ -122,7 +132,7 @@ export function WorkspaceNavChatList() {
                   >
                     <Link href="/workspace/market-hotspots/stock-headlines">
                       <NewspaperIcon />
-                      <span>{t.sidebar.stockHeadlines}</span>
+                      <span>{t.sidebar.stockHotlist}</span>
                     </Link>
                   </SidebarMenuSubButton>
                 </SidebarMenuSubItem>
@@ -170,20 +180,82 @@ export function WorkspaceNavChatList() {
             </Link>
           </SidebarMenuButton>
         </SidebarMenuItem>
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            isActive={pathname === "/workspace/market-analysis"}
-            asChild
-          >
-            <Link
-              className="text-muted-foreground"
-              href="/workspace/market-analysis"
-            >
-              <CandlestickChartIcon />
-              <span>{t.sidebar.marketAnalysis}</span>
-            </Link>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
+        <Collapsible
+          open={marketAnalysisOpen}
+          onOpenChange={setMarketAnalysisOpen}
+          asChild
+        >
+          <SidebarMenuItem>
+            <CollapsibleTrigger asChild>
+              <SidebarMenuButton isActive={isMarketAnalysisPath}>
+                <CandlestickChartIcon />
+                <span>{t.sidebar.marketAnalysis}</span>
+                <ChevronRightIcon
+                  className={`ml-auto size-4 transition-transform ${
+                    marketAnalysisOpen ? "rotate-90" : ""
+                  }`}
+                />
+              </SidebarMenuButton>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <SidebarMenuSub>
+                <SidebarMenuSubItem>
+                  <SidebarMenuSubButton
+                    isActive={
+                      pathname === "/workspace/market-analysis/favorites"
+                    }
+                    asChild
+                  >
+                    <Link href="/workspace/market-analysis/favorites">
+                      <StarIcon />
+                      <span>{t.sidebar.favorites}</span>
+                    </Link>
+                  </SidebarMenuSubButton>
+                </SidebarMenuSubItem>
+                <SidebarMenuSubItem>
+                  <SidebarMenuSubButton
+                    isActive={
+                      pathname === "/workspace/market-analysis/sector-analysis"
+                    }
+                    asChild
+                  >
+                    <Link href="/workspace/market-analysis/sector-analysis">
+                      <BarChart3Icon />
+                      <span>{t.sidebar.sectorAnalysis}</span>
+                    </Link>
+                  </SidebarMenuSubButton>
+                </SidebarMenuSubItem>
+                <SidebarMenuSubItem>
+                  <SidebarMenuSubButton
+                    isActive={
+                      pathname === "/workspace/market-analysis/board-leaders"
+                    }
+                    asChild
+                  >
+                    <Link href="/workspace/market-analysis/board-leaders">
+                      <FlameIcon />
+                      <span>{t.sidebar.boardLeaders}</span>
+                    </Link>
+                  </SidebarMenuSubButton>
+                </SidebarMenuSubItem>
+                <SidebarMenuSubItem>
+                  <SidebarMenuSubButton
+                    isActive={
+                      pathname ===
+                      "/workspace/market-analysis/dragon-tiger-board"
+                    }
+                    asChild
+                  >
+                    <Link href="/workspace/market-analysis/dragon-tiger-board">
+                      <SparklesIcon />
+                      <span>{t.sidebar.dragonTigerBoard}</span>
+                    </Link>
+                  </SidebarMenuSubButton>
+                </SidebarMenuSubItem>
+              </SidebarMenuSub>
+            </CollapsibleContent>
+          </SidebarMenuItem>
+        </Collapsible>
         <SidebarMenuItem>
           <SidebarMenuButton
             isActive={pathname === "/workspace/dashboard"}

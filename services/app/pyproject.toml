@@ -1,0 +1,45 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# apextran-app — the (single) business microservice.
+#
+# One deployable service, many functional modules (market, analysis, …) under
+# src/apextran_app/modules/*. Its dependencies are declared HERE only — the
+# agent-service (`backend`) never gains fastapi/redis/etc. See
+# docs/business-service-架构方案.md.
+# ─────────────────────────────────────────────────────────────────────────────
+[project]
+name = "apextran-app"
+version = "0.1.0"
+description = "ApexTran business microservice — market data & future business modules."
+readme = "README.md"
+requires-python = ">=3.12,<4.0"
+license = "Apache-2.0"
+authors = [{ name = "lss", email = "liwuhen5788@gmail.com" }]
+
+# M1 runtime deps only. M2+ adds: redis, akshare/efinance, sqlalchemy, alembic,
+# arq; M3 adds: cent (Centrifugo client), opentelemetry-*, prometheus-client.
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "httpx>=0.28.1",
+    "psycopg[binary,pool]>=3.3.4",
+    "typer>=0.12.0",
+    "loguru>=0.7.2",
+]
+
+# Optional extras — kept out of the base install so M1 stays light and CI-clean.
+# Enable per environment: `uv sync --extra redis --extra sources`.
+[project.optional-dependencies]
+redis = ["redis>=5.0.0"]        # M2 shared cache (RedisCache)
+sources = ["akshare>=1.14.0"]   # M2 real A-share data (AkshareMarketSource)
+
+[project.scripts]
+apextran-app = "apextran_app.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/apextran_app"]

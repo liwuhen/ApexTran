@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from collections.abc import AsyncIterable
@@ -74,10 +75,10 @@ class WebChannel(Channel):
         self._runner: web.AppRunner | None = None
         # run_id -> queue of ("delta", str) | (_END, None)
         self._streams: dict[str, asyncio.Queue] = {}
-        # thread_id -> list of LangGraph-shaped messages ({type, content, id})
-        # 进程内的会话历史索引。它会被持久化到磁盘(见 _store_path),
-        # 这样后端重启后历史不会丢失。
-        self._threads: dict[str, list[dict[str, Any]]] = {}
+        # 多租户隔离:user_id -> {thread_id -> list of LangGraph-shaped messages}。
+        # 进程内的会话历史索引,每个用户各自独立。它会被持久化到磁盘(见 _store_path),
+        # 这样后端重启后历史不会丢失。用户身份由 _user_id() 从请求头解析。
+        self._threads: dict[str, dict[str, list[dict[str, Any]]]] = {}
         # 历史落盘路径:与 tapes 同级,放在 ApexTran_HOME 下。
         home = Path(os.path.expanduser(os.getenv("ApexTran_HOME", "~/.ApexTran")))
         self._store_path = home / "web_threads.json"
@@ -92,8 +93,22 @@ class WebChannel(Channel):
             raw = self._store_path.read_text(encoding="utf-8")
             data = json.loads(raw)
             if isinstance(data, dict):
-                self._threads = {str(tid): msgs for tid, msgs in data.items() if isinstance(msgs, list)}
-                logger.info(f"web.channel restored {len(self._threads)} thread(s) from {self._store_path}")
+                if data and all(isinstance(v, list) for v in data.values()):
+                    # 旧版扁平格式(thread_id -> messages),迁移到 "default" 租户下。
+                    self._threads = {
+                        "default": {str(tid): msgs for tid, msgs in data.items() if isinstance(msgs, list)}
+                    }
+                else:
+                    # 新版嵌套格式(user_id -> {thread_id -> messages})。
+                    self._threads = {
+                        str(uid): {str(tid): msgs for tid, msgs in threads.items() if isinstance(msgs, list)}
+                        for uid, threads in data.items()
+                        if isinstance(threads, dict)
+                    }
+                total = sum(len(t) for t in self._threads.values())
+                logger.info(
+                    f"web.channel restored {total} thread(s) for {len(self._threads)} user(s) from {self._store_path}"
+                )
         except FileNotFoundError:
             pass
         except Exception as exc:  # 损坏的历史文件不应阻止后端启动
@@ -111,6 +126,29 @@ class WebChannel(Channel):
             tmp.replace(self._store_path)
         except Exception as exc:
             logger.warning(f"web.channel failed to persist thread history: {exc}")
+
+    # ------------------------------------------------------------------ #
+    # Multi-tenant identity
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _user_id(request: web.Request) -> str:
+        """解析租户身份(生产级信任模型)。
+
+        身份只应来自受信前端 BFF 代理——它在服务端校验 better-auth 会话后注入
+        ``X-ApexTran-User``。当配置了 ``ApexTran_WEB_PROXY_SECRET`` 时,请求还必须带
+        匹配的 ``X-ApexTran-Proxy-Secret``,否则一律降级为 "default":这样即便后端端口
+        被直连,也无法伪造他人身份。后端只绑 localhost,代理是唯一入口。
+        """
+        secret = os.getenv("ApexTran_WEB_PROXY_SECRET", "")
+        if secret and request.headers.get("X-ApexTran-Proxy-Secret") != secret:
+            return "default"
+        raw = (request.headers.get("X-ApexTran-User") or "").strip()
+        cleaned = re.sub(r"[^A-Za-z0-9_.\-]", "", raw)[:128]
+        return cleaned or "default"
+
+    def _bucket(self, user_id: str) -> dict[str, list[dict[str, Any]]]:
+        """取(或建)某用户的会话历史桶。"""
+        return self._threads.setdefault(user_id, {})
 
     # ------------------------------------------------------------------ #
     # Channel lifecycle
@@ -137,6 +175,10 @@ class WebChannel(Channel):
             #     /api/* rewrite forwards these keeping the prefix) ---
             web.get("/api/models", self._list_models),
             web.get("/api/skills", self._list_skills),
+            # --- Inter-service contract: the business service (apextran-app)
+            #     POSTs analysis requests here and streams the model output back.
+            #     Same identity/secret trust model as every other endpoint. ---
+            web.post("/analyze", self._analyze),
         ])
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -179,29 +221,34 @@ class WebChannel(Channel):
         return web.json_response({"status": "ok", "channel": self.name})
 
     async def _create_thread(self, request: web.Request) -> web.Response:
+        user = self._user_id(request)
         body = await _json_body(request)
         thread_id = body.get("thread_id") or str(uuid.uuid4())
-        self._threads.setdefault(thread_id, [])
+        self._bucket(user).setdefault(thread_id, [])
         self._save_threads()
-        return web.json_response(self._thread_obj(thread_id))
+        return web.json_response(self._thread_obj(user, thread_id))
 
     async def _get_thread(self, request: web.Request) -> web.Response:
+        user = self._user_id(request)
         thread_id = request.match_info["thread_id"]
-        return web.json_response(self._thread_obj(thread_id))
+        return web.json_response(self._thread_obj(user, thread_id))
 
     async def _search_threads(self, request: web.Request) -> web.Response:
-        return web.json_response([self._thread_obj(tid) for tid in self._threads])
+        user = self._user_id(request)
+        return web.json_response([self._thread_obj(user, tid) for tid in self._bucket(user)])
 
     async def _thread_state(self, request: web.Request) -> web.Response:
+        user = self._user_id(request)
         thread_id = request.match_info["thread_id"]
-        return web.json_response(self._state_obj(thread_id))
+        return web.json_response(self._state_obj(user, thread_id))
 
     async def _thread_history(self, request: web.Request) -> web.Response:
+        user = self._user_id(request)
         thread_id = request.match_info["thread_id"]
-        messages = self._threads.get(thread_id, [])
+        messages = self._bucket(user).get(thread_id, [])
         if not messages:
             return web.json_response([])
-        return web.json_response([self._state_obj(thread_id)])
+        return web.json_response([self._state_obj(user, thread_id)])
 
     async def _list_models(self, request: web.Request) -> web.Response:
         """Surface ApexTran's configured model in the frontend's expected shape."""
@@ -265,7 +312,8 @@ class WebChannel(Channel):
         框架 -> 消费队列(由 ``stream_events`` 填充)逐帧发出 ``values`` ->
         turn 结束后发出最终的 ``values`` + ``end``。
         """
-        # --- 1. 解析请求:属于哪个 thread、用户输入了什么、生成新的 run_id ---
+        # --- 1. 解析请求:哪个租户、属于哪个 thread、用户输入了什么、生成新的 run_id ---
+        user = self._user_id(request)
         thread_id = request.match_info["thread_id"]
         body = await _json_body(request)
         user_text = _extract_input_text(body)
@@ -274,7 +322,7 @@ class WebChannel(Channel):
         # --- 2. 把这次人类发言追加到该 thread 的历史里,并提前分配 AI 消息 id,
         #        让后续每一帧流式输出都复用它(SDK 按 id 对"生成中"的 AI 消息
         #        做更新去重,而不是不断追加新消息)。 ---
-        messages = self._threads.setdefault(thread_id, [])
+        messages = self._bucket(user).setdefault(thread_id, [])
         user_msg = {"type": "human", "content": user_text, "id": str(uuid.uuid4())}
         messages.append(user_msg)
         # 提问一追加就落盘,即使本次 run 中途失败,问题也不会丢。
@@ -307,9 +355,11 @@ class WebChannel(Channel):
         # --- 6. 把 turn 交给框架。manager 循环会异步处理它,其流式事件经
         #        stream_events 回灌,靠塞进 context 的 run_id 做关联。此调用
         #        不会阻塞等待模型,立即返回。 ---
+        # session_id 折入租户身份 → tape 名(md5(workspace)__md5(session_id))自动
+        # 按用户隔离,同一 thread_id 在不同用户下落到不同 tape 文件。
         await self._on_receive(
             ChannelMessage(
-                session_id=thread_id,
+                session_id=f"{user}::{thread_id}",
                 channel=self.name,
                 content=user_text,
                 chat_id="web",
@@ -350,10 +400,72 @@ class WebChannel(Channel):
         return response
 
     # ------------------------------------------------------------------ #
+    # Inter-service contract — POST /analyze
+    # ------------------------------------------------------------------ #
+    async def _analyze(self, request: web.Request) -> web.StreamResponse:
+        """Stateless analysis for the business service (apextran-app).
+
+        Body: ``{"prompt": str, "context": <json, optional>}``. Runs one turn
+        through the pipeline and streams ``event: delta`` frames then ``end`` —
+        the caller (apextran-app ``analysis`` module) proxies this SSE to the
+        browser. Unlike ``/runs/stream`` this keeps no thread history: analysis
+        is ephemeral, so each call uses a fresh throwaway session.
+        """
+        user = self._user_id(request)
+        body = await _json_body(request)
+        prompt = (body.get("prompt") or "").strip()
+        if not prompt:
+            return web.json_response({"error": "prompt required"}, status=400)
+        context = body.get("context")
+        text = prompt if context is None else (
+            f"[上下文]\n{json.dumps(context, ensure_ascii=False, default=str)}\n\n[请求]\n{prompt}"
+        )
+
+        run_id = str(uuid.uuid4())
+        queue: asyncio.Queue = asyncio.Queue()
+        self._streams[run_id] = queue
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+        await response.write(_sse("metadata", {"run_id": run_id}))
+
+        # Ephemeral session (folds in tenant id); run_id correlates the stream.
+        await self._on_receive(
+            ChannelMessage(
+                session_id=f"{user}::analyze::{run_id}",
+                channel=self.name,
+                content=text,
+                chat_id="analyze",
+                context={"run_id": run_id},
+            )
+        )
+
+        try:
+            while True:
+                kind, value = await queue.get()
+                if kind is _END:
+                    break
+                await response.write(_sse("delta", {"delta": value}, event_id=run_id))
+        finally:
+            self._streams.pop(run_id, None)
+
+        await response.write(_sse("end", None))
+        await response.write_eof()
+        return response
+
+    # ------------------------------------------------------------------ #
     # Object shapes
     # ------------------------------------------------------------------ #
-    def _thread_obj(self, thread_id: str) -> dict[str, Any]:
-        messages = self._threads.get(thread_id, [])
+    def _thread_obj(self, user_id: str, thread_id: str) -> dict[str, Any]:
+        messages = self._threads.get(user_id, {}).get(thread_id, [])
         return {
             "thread_id": thread_id,
             "created_at": _now_iso(),
@@ -363,8 +475,8 @@ class WebChannel(Channel):
             "values": {"messages": messages} if messages else None,
         }
 
-    def _state_obj(self, thread_id: str) -> dict[str, Any]:
-        messages = self._threads.get(thread_id, [])
+    def _state_obj(self, user_id: str, thread_id: str) -> dict[str, Any]:
+        messages = self._threads.get(user_id, {}).get(thread_id, [])
         return {
             "values": {"messages": messages},
             "next": [],

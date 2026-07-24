@@ -116,14 +116,18 @@ def setup_logging(*, force: bool = False) -> None:
     for noisy in ("httpx", "httpcore", "urllib3", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    # Optional APM.
+    # Optional APM. Logfire must never block local/dev startup if the user
+    # hasn't authenticated or the service is unavailable.
     try:
         import logfire
     except ImportError:
         pass
     else:
-        logfire.configure()
-        logger.add(**logfire.loguru_handler())  # add alongside console+file (don't replace them)
+        try:
+            logfire.configure()
+            logger.add(**logfire.loguru_handler())  # add alongside console+file (don't replace them)
+        except Exception as exc:
+            logger.warning("logfire disabled: {}", exc)
 
     _CONFIGURED = True
 
