@@ -1,20 +1,30 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
 
 import {
   addDefaultWatchlistItem,
   loadAiHotspots,
   loadDailyKline,
+  loadDailyKlines,
   loadDefaultWatchlistItems,
   loadFlash,
   loadHeadlines,
   loadHotlist,
   loadIntraday,
+  loadMarketSectorDetail,
+  loadMarketSectors,
   loadQuotes,
   loadNews,
   removeDefaultWatchlistItem,
   searchStocks,
 } from "./api";
-import type { StockSearchItem, WatchlistItemWithQuote } from "./types";
+import { marketRefKey, type MarketRef } from "./refs";
+import type {
+  KlineBar,
+  MarketSectorSort,
+  StockSearchItem,
+  WatchlistItemWithQuote,
+} from "./types";
 import {
   ON_ADD_REQUOTE_DELAY_MS,
   WATCHLIST_ITEMS_QUERY_KEY,
@@ -78,6 +88,13 @@ export function useStockSearch({
   };
 }
 
+// A daily bar changes once a session, so there is nothing to gain from polling
+// it on the intraday cadence — settled history is refetched slowly. The one case
+// that does want a fast poll is a symbol with no stored history yet: the backend
+// is backfilling it in the background, and we want to pick that up promptly.
+const SETTLED_KLINE_POLL_MS = 300_000;
+const AWAITING_BACKFILL_POLL_MS = 5_000;
+
 // Charts are opened on demand from a dialog, so both hooks stay disabled — and
 // poll nothing — until that dialog mounts them with `enabled`.
 export function useDailyKline({
@@ -85,24 +102,71 @@ export function useDailyKline({
   market = "",
   limit = 180,
   enabled = true,
+  initialBars,
 }: {
   symbol: string;
   market?: string;
   limit?: number;
   enabled?: boolean;
+  // Bars already loaded by the watchlist's batch read, so the dialog draws on
+  // open instead of flashing a skeleton for a round trip it doesn't need.
+  initialBars?: KlineBar[];
 }) {
   const trimmedMarket = market.trim();
   const query = useQuery({
     queryKey: ["market", "klines", trimmedMarket, symbol, limit],
     queryFn: () => loadDailyKline(symbol, limit, trimmedMarket),
     enabled: enabled && symbol.length > 0,
-    // Aligned with the worker's 10s snapshot cycle (and the intraday poll).
-    refetchInterval: 10_000,
+    initialData: initialBars?.length ? initialBars : undefined,
+    refetchInterval: (query) =>
+      query.state.data?.length
+        ? SETTLED_KLINE_POLL_MS
+        : AWAITING_BACKFILL_POLL_MS,
     refetchOnWindowFocus: true,
     staleTime: 5_000,
   });
   return {
     bars: query.data ?? [],
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    error: query.error,
+    refetch: query.refetch,
+  };
+}
+
+// The watchlist's daily history in one request, keyed by "market:symbol". The
+// whole list costs one query against stored history, so this scales with the
+// page rather than with the number of stocks on it.
+export function useDailyKlines({
+  refs,
+  limit = 180,
+  enabled = true,
+}: {
+  refs: MarketRef[];
+  limit?: number;
+  enabled?: boolean;
+}) {
+  const keys = refs.map(marketRefKey);
+  const query = useQuery({
+    queryKey: ["market", "klines", "batch", keys, limit],
+    queryFn: () => loadDailyKlines(refs, limit),
+    enabled: enabled && refs.length > 0,
+    refetchInterval: (query) =>
+      (query.state.data?.some((series) => series.bars.length === 0) ?? true)
+        ? AWAITING_BACKFILL_POLL_MS
+        : SETTLED_KLINE_POLL_MS,
+    refetchOnWindowFocus: true,
+    staleTime: 5_000,
+  });
+  const barsByRef = useMemo(() => {
+    const index: Record<string, KlineBar[]> = {};
+    for (const series of query.data ?? []) {
+      index[marketRefKey(series)] = series.bars;
+    }
+    return index;
+  }, [query.data]);
+  return {
+    barsByRef,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
     error: query.error,
@@ -238,6 +302,72 @@ export function useAiHotspots({
     error: query.error,
     refetch: query.refetch,
     dataUpdatedAt: query.dataUpdatedAt,
+  };
+}
+
+export function useMarketSectors({
+  type = "concept",
+  sort = "heat",
+  keyword = "",
+  limit = 100,
+  refetchInterval = 30_000,
+  enabled = true,
+}: {
+  type?: "concept" | "industry";
+  sort?: MarketSectorSort;
+  keyword?: string;
+  limit?: number;
+  refetchInterval?: number | false;
+  enabled?: boolean;
+} = {}) {
+  const trimmedKeyword = keyword.trim();
+  const query = useQuery({
+    queryKey: ["market", "sectors", type, sort, trimmedKeyword, limit],
+    queryFn: () =>
+      loadMarketSectors({
+        type,
+        sort,
+        keyword: trimmedKeyword,
+        limit,
+      }),
+    enabled,
+    refetchInterval,
+    refetchOnWindowFocus: true,
+    staleTime: 5_000,
+  });
+  return {
+    sectors: query.data ?? [],
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    error: query.error,
+    refetch: query.refetch,
+    dataUpdatedAt: query.dataUpdatedAt,
+  };
+}
+
+export function useMarketSectorDetail({
+  sectorId,
+  memberLimit = 100,
+  enabled = true,
+}: {
+  sectorId: string | null;
+  memberLimit?: number;
+  enabled?: boolean;
+}) {
+  const query = useQuery({
+    queryKey: ["market", "sectors", "detail", sectorId, memberLimit],
+    queryFn: () => loadMarketSectorDetail(sectorId ?? "", memberLimit),
+    enabled: enabled && Boolean(sectorId),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+    staleTime: 5_000,
+  });
+  return {
+    detail: query.data ?? null,
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    error: query.error,
+    refetch: query.refetch,
   };
 }
 

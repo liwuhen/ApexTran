@@ -42,10 +42,12 @@ import {
 import { useI18n } from "@/core/i18n/hooks";
 import {
   useAddDefaultWatchlistItem,
+  useDailyKlines,
   useDefaultWatchlistItems,
   useRemoveDefaultWatchlistItem,
   useStockSearch,
 } from "@/core/market/hooks";
+import { marketRefKey } from "@/core/market/refs";
 import type { StockSearchItem } from "@/core/market/types";
 import { cn } from "@/lib/utils";
 
@@ -65,10 +67,6 @@ type FavoriteSort = {
   key: FavoriteSortKey;
   direction: "asc" | "desc";
 };
-
-function stockIdentityKey(stock: Pick<StockSearchItem, "market" | "symbol">) {
-  return `${stock.market.trim()}:${stock.symbol.trim()}`;
-}
 
 export default function FavoritesPage() {
   const { t } = useI18n();
@@ -126,7 +124,7 @@ export default function FavoritesPage() {
   }, []);
 
   const favoriteRefs = useMemo(
-    () => new Set(favorites.map(stockIdentityKey)),
+    () => new Set(favorites.map(marketRefKey)),
     [favorites],
   );
   const sortedFavorites = useMemo(
@@ -146,6 +144,17 @@ export default function FavoritesPage() {
     const start = (favoritePage - 1) * favoritePageSize;
     return sortedFavorites.slice(start, start + favoritePageSize);
   }, [favoritePage, favoritePageSize, sortedFavorites]);
+  // The visible page's daily history, batch-read from the backend's stored
+  // K-line table in one request — so opening any row's chart draws instantly.
+  const klineRefs = useMemo(
+    () =>
+      paginatedFavorites.map((stock) => ({
+        market: stock.market,
+        symbol: stock.symbol,
+      })),
+    [paginatedFavorites],
+  );
+  const dailyKlines = useDailyKlines({ refs: klineRefs });
 
   useEffect(() => {
     setFavoritePage(1);
@@ -164,7 +173,7 @@ export default function FavoritesPage() {
   };
 
   const addFavorite = (stock: StockSearchItem) => {
-    if (favoriteRefs.has(stockIdentityKey(stock)) || addWatchlistItem.isPending) {
+    if (favoriteRefs.has(marketRefKey(stock)) || addWatchlistItem.isPending) {
       return;
     }
     addWatchlistItem.mutate(stock);
@@ -333,7 +342,10 @@ export default function FavoritesPage() {
           </div>
         </ScrollArea>
       </WorkspaceBody>
-      <StockChartDialogHost controller={stockChartDialog} />
+      <StockChartDialogHost
+        controller={stockChartDialog}
+        barsByRef={dailyKlines.barsByRef}
+      />
     </WorkspaceContainer>
   );
 }
@@ -394,9 +406,9 @@ function SearchResultsMenu({
         <div className="max-h-[420px] divide-y overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {stocks.map((stock) => (
             <SearchResultRow
-              key={stockIdentityKey(stock)}
+              key={marketRefKey(stock)}
               stock={stock}
-              added={favoriteRefs.has(stockIdentityKey(stock))}
+              added={favoriteRefs.has(marketRefKey(stock))}
               disabled={disabled}
               onAdd={() => onAdd(stock)}
             />
@@ -504,7 +516,7 @@ function FavoriteStockTable({
             <tbody className="divide-y">
               {stocks.map((stock) => (
                 <tr
-                  key={stockIdentityKey(stock)}
+                  key={marketRefKey(stock)}
                   role="button"
                   tabIndex={0}
                   aria-label={`${stock.name} ${t.market.viewChart}`}

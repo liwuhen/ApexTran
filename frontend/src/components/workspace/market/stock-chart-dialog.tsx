@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useI18n } from "@/core/i18n/hooks";
 import { useDailyKline, useIntraday } from "@/core/market/hooks";
+import { marketRefKey } from "@/core/market/refs";
 import type { IntradaySeries, KlineBar } from "@/core/market/types";
 
 import {
@@ -76,12 +77,18 @@ export function useStockChartDialog(): StockChartDialogController {
 
 export function StockChartDialogHost({
   controller,
+  barsByRef,
 }: {
   controller: StockChartDialogController;
+  // Daily history the page already batch-loaded, keyed by "market:symbol". The
+  // dialog draws it immediately and refreshes on its own cadence afterwards.
+  barsByRef?: Record<string, KlineBar[]>;
 }) {
+  const { stock } = controller;
   return (
     <StockChartDialog
-      stock={controller.stock}
+      stock={stock}
+      initialBars={stock ? barsByRef?.[marketRefKey(stock)] : undefined}
       onOpenChange={controller.onOpenChange}
     />
   );
@@ -89,21 +96,29 @@ export function StockChartDialogHost({
 
 export function StockChartDialog({
   stock,
+  initialBars,
   onOpenChange,
 }: {
   stock: ChartedStock | null;
+  initialBars?: KlineBar[];
   onOpenChange: (open: boolean) => void;
 }) {
   return (
     <Dialog open={stock !== null} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-3xl">
-        {stock ? <StockCharts stock={stock} /> : null}
+        {stock ? <StockCharts stock={stock} initialBars={initialBars} /> : null}
       </DialogContent>
     </Dialog>
   );
 }
 
-function StockCharts({ stock }: { stock: ChartedStock }) {
+function StockCharts({
+  stock,
+  initialBars,
+}: {
+  stock: ChartedStock;
+  initialBars?: KlineBar[];
+}) {
   const { t } = useI18n();
   const [tab, setTab] = useState<ChartTab>("daily");
   const [dailyHoverSummary, setDailyHoverSummary] =
@@ -116,6 +131,7 @@ function StockCharts({ stock }: { stock: ChartedStock }) {
     symbol: stock.symbol,
     market: stock.market,
     enabled: tab === "daily",
+    initialBars,
   });
   const intraday = useIntraday({
     symbol: stock.symbol,

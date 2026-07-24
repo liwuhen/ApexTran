@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  loadMarketSectorDetail,
+  loadMarketSectors,
   loadQuotes,
   normalizeMarketStatFields,
   searchStocks,
@@ -73,6 +75,96 @@ describe("market stat response normalization", () => {
       amount: 987_654_321.5,
       float_market_cap: 210_000_000_000,
       total_market_cap: 250_000_000_000,
+    });
+  });
+
+  it("normalizes numeric fields returned by sector endpoints", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => [
+          {
+            id: "4a7bfcc7-7723-56b1-bf85-d6c8f063f1b5",
+            name: "白酒",
+            type: "concept",
+            source: "hotlist",
+            stock_count: 2,
+            heat_score: 188.5,
+            avg_change_pct: "2.34",
+            max_change_pct: "5.67",
+            amount: "3456000000",
+            up_count: 2,
+            down_count: 0,
+            flat_count: 0,
+            limit_up_count: 1,
+            hotlist_count: 2,
+            high_board: 3,
+            leading_symbols: ["600519"],
+            snapshot_at: "2026-07-13T02:18:17Z",
+            updated_at: "2026-07-13T02:18:17Z",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: "4a7bfcc7-7723-56b1-bf85-d6c8f063f1b5",
+          name: "白酒",
+          type: "concept",
+          source: "hotlist",
+          stock_count: 2,
+          heat_score: 188.5,
+          avg_change_pct: "2.34",
+          max_change_pct: "5.67",
+          amount: "3456000000",
+          up_count: 2,
+          down_count: 0,
+          flat_count: 0,
+          limit_up_count: 1,
+          hotlist_count: 2,
+          high_board: 3,
+          leading_symbols: ["600519"],
+          snapshot_at: "2026-07-13T02:18:17Z",
+          updated_at: "2026-07-13T02:18:17Z",
+          members: [
+            {
+              symbol: "600519",
+              name: "贵州茅台",
+              market: "沪市A股",
+              role: "leader",
+              reason: "资金净流入居前",
+              weight: 128,
+              latest_price: 1204.98,
+              change_pct: "1.93",
+              turnover_rate: "0.37",
+              amount: "2345678901",
+              boards: 2,
+              hot_score: 98,
+              updated_at: "2026-07-13T02:18:17Z",
+            },
+          ],
+        }),
+      });
+    vi.stubGlobal("fetch", fetch);
+
+    const [sector] = await loadMarketSectors();
+    if (!sector) {
+      throw new Error("expected one sector");
+    }
+    const detail = await loadMarketSectorDetail(sector.id);
+
+    expect(sector).toMatchObject({
+      avg_change_pct: 2.34,
+      max_change_pct: 5.67,
+      amount: 3_456_000_000,
+    });
+    expect(detail.members[0]).toMatchObject({
+      change_pct: 1.93,
+      turnover_rate: 0.37,
+      amount: 2_345_678_901,
     });
   });
 

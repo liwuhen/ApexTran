@@ -47,6 +47,61 @@ export interface StockQuoteItem {
   updated_at: string; // ISO 8601
 }
 
+export interface MarketSector {
+  id: string;
+  name: string;
+  type: "concept" | "industry" | string;
+  source: string;
+  stock_count: number;
+  heat_score: number;
+  avg_change_pct: number | null;
+  max_change_pct: number | null;
+  amount: number | null;
+  up_count: number;
+  down_count: number;
+  flat_count: number;
+  limit_up_count: number;
+  hotlist_count: number;
+  high_board: number;
+  leading_symbols: string[];
+  snapshot_at: string | null;
+  updated_at: string;
+}
+
+export type MarketSectorSort =
+  | "heat"
+  | "change"
+  | "amount"
+  | "leaders"
+  | "name";
+
+export interface MarketSectorMember {
+  symbol: string;
+  name: string;
+  market: string;
+  role:
+    | "leader"
+    | "center"
+    | "follower"
+    | "catch_up"
+    | "core"
+    | "member"
+    | string;
+  reason: string;
+  weight: number;
+  latest_price: number | null;
+  change_pct: number | null;
+  turnover_rate: number | null;
+  amount: number | null;
+  boards: number;
+  hot_score: number;
+  updated_at: string;
+}
+
+export interface MarketSectorDetail extends MarketSector {
+  members: MarketSectorMember[];
+}
+
 export interface KlineBar {
   date: string; // YYYY-MM-DD
   open: number;
@@ -54,6 +109,12 @@ export interface KlineBar {
   low: number;
   close: number;
   volume: number; // 手 (100 shares)
+}
+
+export interface SymbolKlineSeries {
+  market: string;
+  symbol: string;
+  bars: KlineBar[];
 }
 
 export interface IntradayPoint {

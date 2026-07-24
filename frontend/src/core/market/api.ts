@@ -1,13 +1,19 @@
 import { getBackendBaseURL } from "../config";
 
+import { marketRef, type MarketRef } from "./refs";
 import type {
   FlashItem,
   HotItem,
   IntradaySeries,
   KlineBar,
+  MarketSector,
+  MarketSectorDetail,
+  MarketSectorMember,
+  MarketSectorSort,
   NewsItem,
   StockQuoteItem,
   StockSearchItem,
+  SymbolKlineSeries,
   WatchlistItem,
   WatchlistItemWithQuote,
 } from "./types";
@@ -19,6 +25,25 @@ type MarketStatFields = Pick<
 type MarketStatKey = keyof MarketStatFields;
 type MarketStatWireFields = Partial<Record<MarketStatKey, unknown>>;
 type MarketItemWire<T> = Omit<T, MarketStatKey> & MarketStatWireFields;
+type MarketSectorWire = Omit<
+  MarketSector,
+  "amount" | "avg_change_pct" | "max_change_pct"
+> & {
+  amount?: unknown;
+  avg_change_pct?: unknown;
+  max_change_pct?: unknown;
+};
+type MarketSectorMemberWire = Omit<
+  MarketSectorMember,
+  "amount" | "turnover_rate" | "change_pct"
+> & {
+  amount?: unknown;
+  turnover_rate?: unknown;
+  change_pct?: unknown;
+};
+type MarketSectorDetailWire = Omit<MarketSectorWire, "members"> & {
+  members: MarketSectorMemberWire[];
+};
 
 function finiteNumberOrNull(value: unknown): number | null {
   if (typeof value === "number") {
@@ -40,6 +65,26 @@ export function normalizeMarketStatFields<T extends object>(
     amount: finiteNumberOrNull(item.amount),
     float_market_cap: finiteNumberOrNull(item.float_market_cap),
     total_market_cap: finiteNumberOrNull(item.total_market_cap),
+  };
+}
+
+function normalizeMarketSector(item: MarketSectorWire): MarketSector {
+  return {
+    ...item,
+    amount: finiteNumberOrNull(item.amount),
+    avg_change_pct: finiteNumberOrNull(item.avg_change_pct),
+    max_change_pct: finiteNumberOrNull(item.max_change_pct),
+  };
+}
+
+function normalizeMarketSectorMember(
+  item: MarketSectorMemberWire,
+): MarketSectorMember {
+  return {
+    ...item,
+    amount: finiteNumberOrNull(item.amount),
+    turnover_rate: finiteNumberOrNull(item.turnover_rate),
+    change_pct: finiteNumberOrNull(item.change_pct),
   };
 }
 
@@ -108,6 +153,28 @@ export async function loadDailyKline(
   return (await res.json()) as KlineBar[];
 }
 
+// One request for a whole watchlist. The backend serves this from stored daily
+// history, so the cost is a single query no matter how many symbols are asked
+// for — never N upstream calls.
+export async function loadDailyKlines(
+  refs: MarketRef[],
+  limit = 180,
+): Promise<SymbolKlineSeries[]> {
+  if (refs.length === 0) {
+    return [];
+  }
+  const base = getBackendBaseURL();
+  const params = new URLSearchParams({
+    symbols: refs.map(marketRef).join(","),
+    limit: String(limit),
+  });
+  const res = await fetch(`${base}/api/v1/market/klines?${params}`);
+  if (!res.ok) {
+    throw new Error(`Failed to load daily klines: ${res.status}`);
+  }
+  return (await res.json()) as SymbolKlineSeries[];
+}
+
 export async function loadIntraday(
   symbol: string,
   market = "",
@@ -164,6 +231,57 @@ export async function loadFlash(): Promise<FlashItem[]> {
     throw new Error(`Failed to load flash: ${res.status}`);
   }
   return (await res.json()) as FlashItem[];
+}
+
+export type LoadMarketSectorsOptions = {
+  type?: "concept" | "industry";
+  sort?: MarketSectorSort;
+  keyword?: string;
+  limit?: number;
+};
+
+export async function loadMarketSectors({
+  type = "concept",
+  sort = "heat",
+  keyword = "",
+  limit = 100,
+}: LoadMarketSectorsOptions = {}): Promise<MarketSector[]> {
+  const base = getBackendBaseURL();
+  const params = new URLSearchParams({
+    type,
+    sort,
+    limit: String(limit),
+  });
+  if (keyword.trim()) {
+    params.set("keyword", keyword.trim());
+  }
+  const res = await fetch(`${base}/api/v1/market/sectors?${params}`);
+  if (!res.ok) {
+    throw new Error(`Failed to load market sectors: ${res.status}`);
+  }
+  const items = (await res.json()) as MarketSectorWire[];
+  return items.map(normalizeMarketSector);
+}
+
+export async function loadMarketSectorDetail(
+  sectorId: string,
+  memberLimit = 100,
+): Promise<MarketSectorDetail> {
+  const base = getBackendBaseURL();
+  const params = new URLSearchParams({
+    member_limit: String(memberLimit),
+  });
+  const res = await fetch(
+    `${base}/api/v1/market/sectors/${encodeURIComponent(sectorId)}?${params}`,
+  );
+  if (!res.ok) {
+    throw new Error(`Failed to load market sector detail: ${res.status}`);
+  }
+  const item = (await res.json()) as MarketSectorDetailWire;
+  return {
+    ...normalizeMarketSector(item),
+    members: item.members.map(normalizeMarketSectorMember),
+  };
 }
 
 type DefaultWatchlistItemsOptions = {
